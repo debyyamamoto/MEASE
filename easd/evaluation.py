@@ -39,16 +39,24 @@ class RuleEvaluator:
         alpha,
         score_metric: str = "legacy_logrank",
         km_time_bins: int | None = 512,
+        redundancy_penalty: float = 0.0,
+        redundancy_similarity_threshold: float = 0.9,
     ):
         if comparacao not in ("complement", "population"):
             raise ValueError("comparacao must be either 'complement' or 'population'.")
         if score_metric not in SCORE_METRICS:
             raise ValueError(f"score_metric must be one of {SCORE_METRICS}.")
+        if not 0.0 <= redundancy_penalty <= 1.0:
+            raise ValueError("redundancy_penalty must be between 0 and 1.")
+        if not 0.0 <= redundancy_similarity_threshold < 1.0:
+            raise ValueError("redundancy_similarity_threshold must be in [0, 1).")
 
         self.dataset_obj = dataset_obj
         self.comparacao = comparacao
         self.score_metric = score_metric
         self.km_time_bins = None if km_time_bins is None or km_time_bins <= 0 else int(km_time_bins)
+        self.redundancy_penalty = float(redundancy_penalty)
+        self.redundancy_similarity_threshold = float(redundancy_similarity_threshold)
         self.sub_group_cases = dataset_obj.get_instances()
         self.p_value = None
         self._fitness = 0.0
@@ -77,12 +85,12 @@ class RuleEvaluator:
         self._km_pooled_risk_counts = np.array([], dtype=float)
         self._km_pooled_survival = np.array([], dtype=float)
         self._mdir_weights = np.empty((0, 0), dtype=float)
-        if score_metric in KM_GRID_SCORE_METRICS:
+        if score_metric in KM_GRID_SCORE_METRICS or self.redundancy_penalty > 0.0:
             self._precompute_km_grid()
         if score_metric in MDIR_SCORE_METRICS:
             self._precompute_mdir_weights()
 
-    def get_covered_mask(self, rule, dataset):
+    def get_covered_mask(self, rule, dataset: np.ndarray):
         if not rule or len(rule) < 2 or len(rule[0]) != len(rule[1]):
             return np.zeros(dataset.shape[0], dtype=bool)
 
@@ -106,10 +114,10 @@ class RuleEvaluator:
 
         return mask
 
-    def get_covered_indices(self, rule, dataset):
+    def get_covered_indices(self, rule, dataset: np.ndarray):
         return np.flatnonzero(self.get_covered_mask(rule, dataset)).tolist()
 
-    def fitness(self, rule, dataset_x):
+    def fitness(self, rule, dataset_x: np.ndarray):
         """Receives a rule and computes its fitness."""
         rule_mask = self.get_covered_mask(rule, dataset_x)
         covered_count = int(rule_mask.sum())
@@ -138,12 +146,55 @@ class RuleEvaluator:
             return 0.0
         return float(discrepancy * (relative_support**self.alpha))
 
-    def get_fitness(self, population, dataset_x):
-        fitness_list = []
-        for i in range(len(population)):
-            fitness_list.append(self.fitness(population[i], dataset_x))
-        fitness_list = np.array(fitness_list)
-        return list(fitness_list)
+    def get_fitness(self, population, dataset_x: np.ndarray):
+        fitness_array = np.asarray([self.fitness(individual, dataset_x) for individual in population], dtype=float)
+        sorted_indices = np.argsort(-fitness_array, kind="stable")
+        sorted_population = [population[index] for index in sorted_indices]
+        return fitness_array[sorted_indices].tolist(), sorted_population
+
+    def penalize_score(
+        self,
+        p_fitness_list: list,
+        p_top_k_rules: list,
+        p_population: list,
+        p_dataset_x: np.ndarray,
+        candidate_count: int | None = None,
+    ) -> list[float]:
+        """Penalize candidates whose survival curve is too similar to the Top-K."""
+        penalized = [float(score) for score in p_fitness_list]
+        if self.redundancy_penalty <= 0.0 or not p_top_k_rules or not penalized:
+            return penalized
+
+        top_k_curves = [self._km_curve(np.asarray(top_rule[2], dtype=bool)) for top_rule in p_top_k_rules]
+        top_k_keys = [tuple(sorted(top_rule[1][0])) for top_rule in p_top_k_rules]
+        limit = len(p_population) if candidate_count is None else max(0, candidate_count)
+        limit = min(limit, len(p_population), len(penalized))
+        threshold = self.redundancy_similarity_threshold
+
+        for idx in range(limit):
+            if penalized[idx] <= 0.0:
+                continue
+            # The archive replaces rules with the same attribute key. Compare
+            # against the other entries, which can coexist with this candidate.
+            candidate_key = tuple(sorted(p_population[idx][0]))
+            candidate_mask = self.get_covered_mask(p_population[idx], p_dataset_x)
+            candidate_curve = self._km_curve(candidate_mask)
+            max_similarity = max(
+                (
+                    self._km_curve_similarity_from_estimates(candidate_curve, top_k_curve)
+                    for top_key, top_k_curve in zip(top_k_keys, top_k_curves)
+                    if top_key != candidate_key
+                ),
+                default=0.0,
+            )
+            if max_similarity <= threshold:
+                continue
+
+            normalized_similarity = (max_similarity - threshold) / (1.0 - threshold)
+            penalty_factor = 1.0 - (self.redundancy_penalty * normalized_similarity)
+            penalized[idx] = max(0.0, penalized[idx] * penalty_factor)
+
+        return penalized
 
     def _legacy_logrank_score(self, rule_mask: np.ndarray) -> float:
         try:
@@ -295,6 +346,36 @@ class RuleEvaluator:
             distance = float(np.sum(weighted_widths * diff * diff) / normalizer)
 
         return min(max(distance, 0.0), 1.0)
+
+    def _km_curve(self, rule_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        subject_counts, event_counts = self._group_km_counts(rule_mask)
+        risk_counts = np.cumsum(subject_counts[::-1])[::-1]
+        survival = self._kaplan_meier_from_counts(event_counts, risk_counts)
+        return survival, risk_counts
+
+    def _km_curve_similarity_from_estimates(
+        self,
+        first_curve: tuple[np.ndarray, np.ndarray],
+        second_curve: tuple[np.ndarray, np.ndarray],
+    ) -> float:
+        first_survival, first_risk_counts = first_curve
+        second_survival, second_risk_counts = second_curve
+
+        valid = (
+            (first_risk_counts > 0.0) & (second_risk_counts > 0.0) & (self._km_widths > 0.0) & (self._km_weights > 0.0)
+        )
+        if not np.any(valid):
+            return 0.0
+
+        weighted_widths = self._km_widths[valid] * self._km_weights[valid]
+        normalizer = float(weighted_widths.sum())
+        if normalizer <= EPSILON:
+            return 0.0
+
+        difference = first_survival[valid] - second_survival[valid]
+        mean_squared_distance = float(np.sum(weighted_widths * difference * difference) / normalizer)
+        rms_distance = np.sqrt(min(max(mean_squared_distance, 0.0), 1.0))
+        return float(1.0 - rms_distance)
 
     def _group_km_counts(self, rule_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         grid_size = self._km_grid_times.size

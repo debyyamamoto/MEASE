@@ -55,6 +55,8 @@ class MEASE:
         rate_policy: RATEPOLICY = "adaptive",
         score_metric: str = "legacy_logrank",
         km_time_bins: int | None = 512,
+        redundancy_penalty: float = 0.0,
+        redundancy_similarity_threshold: float = 0.9,
     ):
         if rate_policy not in ("adaptive", "fixed"):
             raise ValueError("rate_policy must be either 'adaptive' or 'fixed'.")
@@ -84,12 +86,16 @@ class MEASE:
         self.alpha = alpha
         self.score_metric = score_metric
         self.km_time_bins = km_time_bins
+        self.redundancy_penalty = redundancy_penalty
+        self.redundancy_similarity_threshold = redundancy_similarity_threshold
         self.evaluation = RuleEvaluator(
             self.dataset_obj,
             comparacao,
             self.alpha,
             score_metric=self.score_metric,
             km_time_bins=self.km_time_bins,
+            redundancy_penalty=self.redundancy_penalty,
+            redundancy_similarity_threshold=self.redundancy_similarity_threshold,
         )
         self.operators = GeneticOperators(self.evaluation, self._get_best)
         self.top_n_plot = plot_n_rules
@@ -121,7 +127,7 @@ class MEASE:
             cobertura = self._jaccard_test(new_mask, existing_mask)
             if cobertura >= self.coverage_threshold:
                 if new_fitness <= existing_fitness + EPSILON:
-                    return True, None
+                    return True, new_mask
                 else:
                     keys_to_remove.append(existing_key)
 
@@ -164,7 +170,7 @@ class MEASE:
                     rule[1][i][0] = candidates[nearest_idx]
 
         rule = self._label_rules(rule)
-        
+
         return rule
 
     def _get_best(self, fitness_list):
@@ -281,8 +287,6 @@ class MEASE:
             if is_redundant:
                 continue
             if len(self.best_by_key) < self.ksize or (self.top_k_heap and fitness > self.top_k_heap[0][0] + EPSILON):
-                if new_mask is None:
-                    new_mask = self._get_mask(individual)
                 self._add_rule_to_top_k(key, fitness, individual, new_mask)
 
                 while len(self.best_by_key) > self.ksize:
@@ -295,15 +299,6 @@ class MEASE:
 
         if len(self.top_k_heap) > len(self.best_by_key):
             self._rebuild_heap_from_topk()
-
-    def _update_current_rule(self, p_rule, p_previous, p_individual, p_fitness):
-        """
-        Updates an existing top-k rule when its intervals improve the fitness.
-        """
-        previous_fit, _ = p_previous
-        if p_fitness > previous_fit + EPSILON:
-            self.best_by_key[p_rule] = (p_fitness, p_individual)
-            heappush(self.top_k_heap, (p_fitness, p_rule))
 
     def _rebuild_heap_from_topk(self):
         self.top_k_heap = []
@@ -342,7 +337,7 @@ class MEASE:
         if self.debug_performance:
             profiler.start()
 
-        dataset_x = self.dataset_obj.data
+        dataset_x = np.array(self.dataset_obj.data)
 
         mean_fitness_history = []
         best_fitness_history = []
@@ -354,6 +349,10 @@ class MEASE:
         console.print(f"   - Generations: {self.max_generations}")
         console.print(f"   - Top-K: {self.ksize} best rules")
         console.print(f"   - Score metric: {self.score_metric}")
+        console.print(
+            f"   - Redundancy penalty: {self.redundancy_penalty:.2f} "
+            f"(similarity > {self.redundancy_similarity_threshold:.2f})"
+        )
         console.print(
             f"   - Rate policy: {self.rate_policy} "
             f"(crossover={self.crossover_rate}%, mutation={self.mutation_rate}%)"
@@ -368,7 +367,14 @@ class MEASE:
 
         with console.status("[bold green] Evolving generations...") as status:
             while self._check_stop(gen_count):
-                fitness_list = self.evaluation.get_fitness(population, dataset_x)
+                fitness_list, population = self.evaluation.get_fitness(population, dataset_x)
+
+                fitness_list = self.evaluation.penalize_score(
+                    fitness_list,
+                    list(self.best_by_key.values()),
+                    population,
+                    dataset_x,
+                )
 
                 population, fitness_list = self.operators.crossover(
                     population, (self.crossover_rate / 100), fitness_list, dataset_x
@@ -376,7 +382,13 @@ class MEASE:
 
                 population = self.operators.mutation(population, (self.mutation_rate / 100), fitness_list, dataset_x)
 
-                fitness_list = self.evaluation.get_fitness(population, dataset_x)
+                fitness_list, population = self.evaluation.get_fitness(population, dataset_x)
+                fitness_list = self.evaluation.penalize_score(
+                    fitness_list,
+                    list(self.best_by_key.values()),
+                    population,
+                    dataset_x,
+                )
 
                 if not fitness_list:
                     console.print(
@@ -393,7 +405,13 @@ class MEASE:
                 if new_population is not None:
                     population = new_population
                     restart_generations.append(gen_count + 1)
-                    fitness_list = self.evaluation.get_fitness(population, dataset_x)
+                    fitness_list, population = self.evaluation.get_fitness(population, dataset_x)
+                    fitness_list = self.evaluation.penalize_score(
+                        fitness_list,
+                        list(self.best_by_key.values()),
+                        population,
+                        dataset_x,
+                    )
                     del new_population
 
                 mean_fit = float(np.mean(fitness_list))
@@ -444,12 +462,14 @@ class MEASE:
         sorted_rules = sorted(self.best_by_key.values(), key=lambda x: x[0], reverse=True)
 
         rules_sizes = []
-        rules_scores = []
+        raw_rules_scores = []
+        penalized_rules_scores = []
         for fit, rule_raw, _ in sorted_rules:
+            raw_rules_scores.append(self.evaluation.fitness(rule_raw, dataset_x))
             rule_adjusted = self._adjust_interval(copy.deepcopy(rule_raw), dataset_x)
             final_rules_found.append(rule_adjusted)
             rules_sizes.append(len(rule_adjusted[0]))
-            rules_scores.append(fit)
+            penalized_rules_scores.append(fit)
 
         total_time = time.time() - start_time
         rules_qtd = len(final_rules_found)
@@ -458,7 +478,13 @@ class MEASE:
         console.print(f"   - Rules found: {rules_qtd}")
         console.print(f"   - Mean size: {mean_size:.2f} attributes")
         print(f"{'='*70}\n")
-        detailed_rules_df = pd.DataFrame({"Rule_Obj": [str(r) for r in final_rules_found], "Rule_Score": rules_scores})
+        detailed_rules_df = pd.DataFrame(
+            {
+                "Rule_Obj": [str(r) for r in final_rules_found],
+                "Rule_Score": raw_rules_scores,
+                "Penalized_Rule_Score": penalized_rules_scores,
+            }
+        )
         figures_list = RulesPlotter(
             self.dataset_obj._original_data, final_rules_found, self.survival_event_col, self.survival_time_col
         ).kaplan_meier(self.top_n_plot)
@@ -479,6 +505,8 @@ class MEASE:
             "best_fitness": [final_metrics[1]],
             "score_metric": [self.score_metric],
             "km_time_bins": [self.km_time_bins if self.km_time_bins is not None else 0],
+            "redundancy_penalty": [self.redundancy_penalty],
+            "redundancy_similarity_threshold": [self.redundancy_similarity_threshold],
             "rate_policy": [self.rate_policy],
             "initial_crossover_rate": [self.initial_crossover_rate],
             "initial_mutation_rate": [self.initial_mutation_rate],

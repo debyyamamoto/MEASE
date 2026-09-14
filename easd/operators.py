@@ -3,6 +3,7 @@ import copy
 import numpy as np
 import pandas as pd
 
+
 class GeneticOperators:
     def __init__(self, evaluator, get_best_func):
         self.evaluator = evaluator
@@ -13,7 +14,7 @@ class GeneticOperators:
         if col_index not in self._column_values_cache:
             self._column_values_cache[col_index] = dataset[:, col_index]
         return self._column_values_cache[col_index]
-    
+
     def to_mutate_continuous(self, interval, usage_prct, mutation_option):
         """
         Mutates numeric attributes.

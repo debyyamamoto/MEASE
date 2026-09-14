@@ -39,10 +39,20 @@ Results are written to `results/<dataset>/<baseline>/`.
 | `-a`, `--alpha` | no | Fitness alpha weight | `0.5` |
 | `--score_metric` | no | `legacy_logrank`, `fast_logrank`, `km_cvm`, `km_abc`, `mdir2`, `mdir3`, or `mdir4` | `legacy_logrank` |
 | `--km_time_bins` | no | Maximum time grid size for `km_cvm`/`km_abc`/`mdir*`; use `0` for exact event-time grid | `512` |
+| `--redundancy_penalty` | no | Strength of the Top-K curve-similarity penalty in `[0, 1]` | `0.0` |
+| `--redundancy_similarity_threshold` | no | Penalize KM curve similarities above this value | `0.5` |
 | `-exe`, `--executions` | no | Independent executions | `1` |
 | `-k`, `--ksize` | no | Top-K rule rank size | `10` |
 | `-plt`, `--plt_rank` | no | Save top-N plots for a single execution | `0` |
 | `-d`, `--debug_performance` | no | Collect CPU/RAM metrics (`on`/`off`) | `off` |
+
+When the redundancy penalty is enabled, `Rule_Score` keeps the original fitness
+and `Penalized_Rule_Score` records the value used to rank Top-K candidates. Curve
+similarity is `1 - sqrt(weighted_cvm_distance)`, so the threshold is expressed on
+the Kaplan-Meier survival-probability scale rather than the squared `km_cvm` scale.
+The stored penalized score reflects the archive at admission/update time, not a
+joint reevaluation of the final Top-K. The paired real-data evaluation and its
+diagnostics are documented in [the redundancy benchmark](experiments/redundancy_benchmark.md).
 
 ## Article Experiments
 

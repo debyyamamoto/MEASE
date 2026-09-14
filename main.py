@@ -56,6 +56,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum time grid size for km_cvm/km_abc/mdir*. Use 0 for exact event-time grid.",
     )
     parser.add_argument(
+        "--redundancy_penalty",
+        type=float,
+        default=0.0,
+        help="Strength of the Top-K survival-curve similarity penalty in [0, 1].",
+    )
+    parser.add_argument(
+        "--redundancy_similarity_threshold",
+        type=float,
+        default=0.5,
+        help="Penalize candidates whose Kaplan-Meier curve similarity exceeds this value.",
+    )
+    parser.add_argument(
         "--rate_policy",
         choices=["adaptive", "fixed"],
         default="adaptive",
@@ -99,6 +111,8 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         alpha=args.alpha,
         score_metric=args.score_metric,
         km_time_bins=None if args.km_time_bins <= 0 else args.km_time_bins,
+        redundancy_penalty=args.redundancy_penalty,
+        redundancy_similarity_threshold=args.redundancy_similarity_threshold,
         ksize=args.ksize,
         plot_rank=args.plt_rank,
         threshold=args.threshold,
