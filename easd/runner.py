@@ -40,6 +40,7 @@ class RunConfig:
     km_time_bins: int | None = 512
     redundancy_penalty: float = 0.0
     redundancy_similarity_threshold: float = 0.9
+    archive_selection: Literal["historical", "greedy"] = "historical"
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,7 @@ def run_dataset(config: RunConfig) -> RunSummary:
             km_time_bins=config.km_time_bins,
             redundancy_penalty=config.redundancy_penalty,
             redundancy_similarity_threshold=config.redundancy_similarity_threshold,
+            archive_selection=config.archive_selection,
         )
 
         _, _, _, runtime, _, info, detailed_rules, top_rules, mean_rule_size, figures = sd.run()

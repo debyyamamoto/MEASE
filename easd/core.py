@@ -57,9 +57,12 @@ class MEASE:
         km_time_bins: int | None = 512,
         redundancy_penalty: float = 0.0,
         redundancy_similarity_threshold: float = 0.9,
+        archive_selection: Literal["historical", "greedy"] = "historical",
     ):
         if rate_policy not in ("adaptive", "fixed"):
             raise ValueError("rate_policy must be either 'adaptive' or 'fixed'.")
+        if archive_selection not in ("historical", "greedy"):
+            raise ValueError("archive_selection must be either 'historical' or 'greedy'.")
 
         self.survival_event_col = event_col
         self.survival_time_col = time_col
@@ -88,6 +91,7 @@ class MEASE:
         self.km_time_bins = km_time_bins
         self.redundancy_penalty = redundancy_penalty
         self.redundancy_similarity_threshold = redundancy_similarity_threshold
+        self.archive_selection = archive_selection
         self.evaluation = RuleEvaluator(
             self.dataset_obj,
             comparacao,
@@ -124,8 +128,8 @@ class MEASE:
         keys_to_remove = []
 
         for existing_key, (existing_fitness, _, existing_mask) in self.best_by_key.items():
-            cobertura = self._jaccard_test(new_mask, existing_mask)
-            if cobertura >= self.coverage_threshold:
+            iou = self._jaccard_test(new_mask, existing_mask)
+            if iou >= self.coverage_threshold:
                 if new_fitness <= existing_fitness + EPSILON:
                     return True, new_mask
                 else:
@@ -272,6 +276,9 @@ class MEASE:
         return new_population
 
     def _update_top_k(self, p_population, p_fitness_list):
+        if self.archive_selection == "greedy":
+            self._select_greedy_top_k(p_population, p_fitness_list)
+            return
         for individual, fitness in zip(p_population, p_fitness_list):
             key = self._rule_key(individual)
 
@@ -299,6 +306,58 @@ class MEASE:
 
         if len(self.top_k_heap) > len(self.best_by_key):
             self._rebuild_heap_from_topk()
+
+    def _select_greedy_top_k(self, population, raw_fitness):
+        """Rebuild the archive with marginal scores against one selected prefix."""
+        dataset_x = self.dataset_obj.data
+        pool = [(rule, self.evaluation.fitness(rule, dataset_x)) for _, rule, _ in self.best_by_key.values()]
+        pool.extend(zip(population, raw_fitness))
+        unique = {}
+        for rule, quality in pool:
+            if not np.isfinite(quality) or quality <= 0.0:
+                continue
+            # Keep interval alternatives until their attribute key is selected.
+            signature = repr(sorted((int(attr), tuple(values)) for attr, values in zip(*rule)))
+            unique[signature] = (float(quality), rule, self._get_mask(rule))
+        entries = [entry for _, entry in sorted(unique.items(), key=lambda item: (-item[1][0], item[0]))]
+        selected = {}
+        available = np.ones(len(entries), dtype=bool)
+        quality = np.asarray([entry[0] for entry in entries])
+        similarity = np.zeros(len(entries))
+        curves = [self.evaluation._km_curve(entry[2]) for entry in entries] if self.redundancy_penalty > 0.0 else []
+        threshold = self.redundancy_similarity_threshold
+        while available.any() and len(selected) < self.ksize:
+            redundancy = np.maximum(0.0, (similarity - threshold) / (1.0 - threshold))
+            marginal = quality * (1.0 - self.redundancy_penalty * redundancy)
+            index = int(np.argmax(np.where(available, marginal, -np.inf)))
+            _, rule, mask = entries[index]
+            key = self._rule_key(rule)
+            selected[key] = (float(max(0.0, marginal[index])), copy.deepcopy(rule), mask.copy())
+            for other in np.flatnonzero(available):
+                _, other_rule, other_mask = entries[other]
+                if (
+                    self._rule_key(other_rule) == key
+                    or self._jaccard_test(mask, other_mask) >= self.coverage_threshold
+                ):
+                    available[other] = False
+                elif curves:
+                    similarity[other] = max(
+                        similarity[other],
+                        self.evaluation._km_curve_similarity_from_estimates(curves[index], curves[other]),
+                    )
+        self.best_by_key = selected
+        self._rebuild_heap_from_topk()
+
+    def _population_fitness(self, population, dataset_x):
+        fitness, population = self.evaluation.get_fitness(population, dataset_x)
+        if self.archive_selection == "historical":
+            fitness = self.evaluation.penalize_score(
+                fitness,
+                list(self.best_by_key.values()),
+                population,
+                dataset_x,
+            )
+        return fitness, population
 
     def _rebuild_heap_from_topk(self):
         self.top_k_heap = []
@@ -349,6 +408,7 @@ class MEASE:
         console.print(f"   - Generations: {self.max_generations}")
         console.print(f"   - Top-K: {self.ksize} best rules")
         console.print(f"   - Score metric: {self.score_metric}")
+        console.print(f"   - Archive selection: {self.archive_selection}")
         console.print(
             f"   - Redundancy penalty: {self.redundancy_penalty:.2f} "
             f"(similarity > {self.redundancy_similarity_threshold:.2f})"
@@ -367,14 +427,7 @@ class MEASE:
 
         with console.status("[bold green] Evolving generations...") as status:
             while self._check_stop(gen_count):
-                fitness_list, population = self.evaluation.get_fitness(population, dataset_x)
-
-                fitness_list = self.evaluation.penalize_score(
-                    fitness_list,
-                    list(self.best_by_key.values()),
-                    population,
-                    dataset_x,
-                )
+                fitness_list, population = self._population_fitness(population, dataset_x)
 
                 population, fitness_list = self.operators.crossover(
                     population, (self.crossover_rate / 100), fitness_list, dataset_x
@@ -382,13 +435,7 @@ class MEASE:
 
                 population = self.operators.mutation(population, (self.mutation_rate / 100), fitness_list, dataset_x)
 
-                fitness_list, population = self.evaluation.get_fitness(population, dataset_x)
-                fitness_list = self.evaluation.penalize_score(
-                    fitness_list,
-                    list(self.best_by_key.values()),
-                    population,
-                    dataset_x,
-                )
+                fitness_list, population = self._population_fitness(population, dataset_x)
 
                 if not fitness_list:
                     console.print(
@@ -405,13 +452,7 @@ class MEASE:
                 if new_population is not None:
                     population = new_population
                     restart_generations.append(gen_count + 1)
-                    fitness_list, population = self.evaluation.get_fitness(population, dataset_x)
-                    fitness_list = self.evaluation.penalize_score(
-                        fitness_list,
-                        list(self.best_by_key.values()),
-                        population,
-                        dataset_x,
-                    )
+                    fitness_list, population = self._population_fitness(population, dataset_x)
                     del new_population
 
                 mean_fit = float(np.mean(fitness_list))
@@ -491,7 +532,6 @@ class MEASE:
         figures_list.append(
             plot_topk_convergency(
                 topk_best_fitness_history,
-                gen_best_fitness,
                 gen_mean_fitness,
                 restart_generations,
             )
@@ -507,6 +547,8 @@ class MEASE:
             "km_time_bins": [self.km_time_bins if self.km_time_bins is not None else 0],
             "redundancy_penalty": [self.redundancy_penalty],
             "redundancy_similarity_threshold": [self.redundancy_similarity_threshold],
+            "archive_selection": [self.archive_selection],
+            "archive_score_context": ["selection_prefix" if self.archive_selection == "greedy" else "historical"],
             "rate_policy": [self.rate_policy],
             "initial_crossover_rate": [self.initial_crossover_rate],
             "initial_mutation_rate": [self.initial_mutation_rate],

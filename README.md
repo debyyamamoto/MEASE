@@ -41,6 +41,7 @@ Results are written to `results/<dataset>/<baseline>/`.
 | `--km_time_bins` | no | Maximum time grid size for `km_cvm`/`km_abc`/`mdir*`; use `0` for exact event-time grid | `512` |
 | `--redundancy_penalty` | no | Strength of the Top-K curve-similarity penalty in `[0, 1]` | `0.0` |
 | `--redundancy_similarity_threshold` | no | Penalize KM curve similarities above this value | `0.5` |
+| `--archive_selection` | no | `historical` update or experimental `greedy` reselection | `historical` |
 | `-exe`, `--executions` | no | Independent executions | `1` |
 | `-k`, `--ksize` | no | Top-K rule rank size | `10` |
 | `-plt`, `--plt_rank` | no | Save top-N plots for a single execution | `0` |
@@ -50,9 +51,14 @@ When the redundancy penalty is enabled, `Rule_Score` keeps the original fitness
 and `Penalized_Rule_Score` records the value used to rank Top-K candidates. Curve
 similarity is `1 - sqrt(weighted_cvm_distance)`, so the threshold is expressed on
 the Kaplan-Meier survival-probability scale rather than the squared `km_cvm` scale.
-The stored penalized score reflects the archive at admission/update time, not a
-joint reevaluation of the final Top-K. The paired real-data evaluation and its
+With `historical`, the stored penalized score reflects the archive at
+admission/update time. With `greedy`, old and new rules compete against the same
+selected prefix at each step; genetic operators use raw fitness. Its stored
+score is the marginal score at selection, not a score against the final Top-K.
+Neither mode stores a symmetric joint score of the final set. The paired real-data evaluation and its
 diagnostics are documented in [the redundancy benchmark](experiments/redundancy_benchmark.md).
+The [greedy archive pilot report](experiments/results_greedy_analysis/relatorio.md)
+compares both modes and documents remaining statistical and reproducibility limits.
 
 ## Article Experiments
 

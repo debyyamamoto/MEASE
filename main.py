@@ -24,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output_dir", type=Path, default=Path("results"), help="Directory for generated outputs.")
     parser.add_argument("--dataset_name", default=None, help="Optional name used in output files.")
     parser.add_argument("--seed", type=int, default=None, help="Seed for reproducibility.")
-    parser.add_argument("-th", "--threshold", type=float, default=0.9, help="Jaccard similarity threshold.")
+    parser.add_argument("-th", "--threshold", type=float, default=0.5, help="Jaccard similarity threshold.")
     parser.add_argument("-g", "--generations", type=int, default=500, help="Maximum number of generations.")
     parser.add_argument("-p", "--population", type=int, default=500, help="Population size.")
     parser.add_argument("--restart_gen", type=int, default=3, help="Generation limit without improvement.")
@@ -66,6 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.5,
         help="Penalize candidates whose Kaplan-Meier curve similarity exceeds this value.",
+    )
+    parser.add_argument(
+        "--archive_selection",
+        choices=["historical", "greedy"],
+        default="historical",
+        help="Archive update: historical scores or greedy reselection with raw genetic fitness.",
     )
     parser.add_argument(
         "--rate_policy",
@@ -113,6 +119,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         km_time_bins=None if args.km_time_bins <= 0 else args.km_time_bins,
         redundancy_penalty=args.redundancy_penalty,
         redundancy_similarity_threshold=args.redundancy_similarity_threshold,
+        archive_selection=args.archive_selection,
         ksize=args.ksize,
         plot_rank=args.plt_rank,
         threshold=args.threshold,
