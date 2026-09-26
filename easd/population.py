@@ -1,5 +1,6 @@
 import random as rd
 
+
 class PopulationGenerator:
     def gen_interval(self, continuous_attribute):
         if continuous_attribute >= 0:

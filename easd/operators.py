@@ -1,6 +1,8 @@
-import pandas as pd
 import random as rd
 import copy
+import numpy as np
+import pandas as pd
+
 
 class GeneticOperators:
     def __init__(self, evaluator, get_best_func):
@@ -8,11 +10,11 @@ class GeneticOperators:
         self._get_best = get_best_func
         self._column_values_cache = {}
 
-    def _column_values(self, dataset, col_index):
+    def _column_values(self, dataset: pd.DataFrame, col_index: int):
         if col_index not in self._column_values_cache:
-            self._column_values_cache[col_index] = dataset[:, col_index].tolist()
+            self._column_values_cache[col_index] = dataset[:, col_index]
         return self._column_values_cache[col_index]
-    
+
     def to_mutate_continuous(self, interval, usage_prct, mutation_option):
         """
         Mutates numeric attributes.
@@ -66,7 +68,7 @@ class GeneticOperators:
         if mutation_option == 1:
             for i in range(len(discrete_atr)):
                 new_discrete.append(discrete_atr[i])
-            unique_values = pd.Series(attribute_domain).unique()
+            unique_values = np.unique(attribute_domain)
             if len(new_discrete) < len(unique_values):
                 while True:
                     idx_discr = rd.randint(0, len(unique_values) - 1)
@@ -83,10 +85,10 @@ class GeneticOperators:
             elif len(discrete_atr) == 1:
                 new_discrete = []
         # Paper mutation 1: remove a value from the accepted values.
-        elif mutation_option == 2:
+        else:
             if len(discrete_atr) > 1:
                 to_be_altered = rd.randint(0, len(discrete_atr) - 1)
-            elif len(discrete_atr) == 1:
+            else:
                 to_be_altered = 0
 
             idx_discr = rd.randint(0, len(attribute_domain) - 1)
@@ -96,7 +98,7 @@ class GeneticOperators:
 
         return new_discrete
 
-    def mutation(self, population, prct, fitness_list, dataset): 
+    def mutation(self, population, prct, fitness_list, dataset):
         mutated_population = copy.deepcopy(population)
 
         for mutations in range(len(mutated_population)):
@@ -110,7 +112,7 @@ class GeneticOperators:
                     else:
                         break
                 # Elitism: protect the best individual.
-                if rd_index != self._get_best(mutated_population, fitness_list):
+                if rd_index != self._get_best(fitness_list):
                     # If the rule has only one attribute, mutate it.
                     if len(rule[0]) == 1:
                         atr_qtd = 1

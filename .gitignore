@@ -220,5 +220,4 @@ __marimo__/
 *.txt
 
 *.prof
-experiments/artificial_datsets/generated/
-results_teste/
+results/

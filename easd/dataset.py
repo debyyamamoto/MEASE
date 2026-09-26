@@ -10,7 +10,6 @@ class Dataset:
         self.average_survival = None
         self.events = ()
         self.attr_values = {}
-        self.data = None
 
         self._col_index = {}
         self._uncovered_cases = [True] * data.shape[0]
@@ -37,7 +36,7 @@ class Dataset:
         data.drop(columns=to_drop, inplace=True)
 
         col_names = list(data.columns.values)
-    
+
         self._col_index = dict.fromkeys(col_names)
         for name in col_names:
             self._col_index[name] = data.columns.get_loc(name)
@@ -52,16 +51,51 @@ class Dataset:
         self.numeric_matrix = data[numeric_cols].to_numpy(dtype=np.float64)
 
         self.categorical_codebooks = {
-            self._col_index[c]: {v: i for i, v in enumerate(self.attr_values[c])}
-            for c in categorical_cols
+            self._col_index[c]: {v: i for i, v in enumerate(self.attr_values[c])} for c in categorical_cols
         }
 
-        self.categorical_matrix = np.column_stack([
-            data[c].map(self.categorical_codebooks[self._col_index[c]]).to_numpy(dtype=np.int32)
-            for c in categorical_cols
-        ]) if categorical_cols else np.empty((data.shape[0], 0), dtype=np.int32)
+        self.categorical_matrix = (
+            np.column_stack(
+                [
+                    data[c].map(self.categorical_codebooks[self._col_index[c]]).to_numpy(dtype=np.int32)
+                    for c in categorical_cols
+                ]
+            )
+            if categorical_cols
+            else np.empty((data.shape[0], 0), dtype=np.int32)
+        )
 
-        self.col_local_index = {}  
+        self.col_local_index = {}
+        for local_i, c in enumerate(numeric_cols):
+            self.col_local_index[self._col_index[c]] = (True, local_i)
+        for local_i, c in enumerate(categorical_cols):
+            self.col_local_index[self._col_index[c]] = (False, local_i)
+
+        self.attr_values = dict.fromkeys(col_names)
+        for name in col_names:
+            self.attr_values[name] = list(set(pd.unique(data[name])))
+
+        numeric_cols = [c for c in col_names if data[c].dtype != "string"]
+        categorical_cols = [c for c in col_names if data[c].dtype == "string"]
+
+        self.numeric_matrix = data[numeric_cols].to_numpy(dtype=np.float64)
+
+        self.categorical_codebooks = {
+            self._col_index[c]: {v: i for i, v in enumerate(self.attr_values.get(c) or [])} for c in categorical_cols
+        }
+
+        self.categorical_matrix = (
+            np.column_stack(
+                [
+                    data[c].map(self.categorical_codebooks[self._col_index[c]]).to_numpy(dtype=np.int32)
+                    for c in categorical_cols
+                ]
+            )
+            if categorical_cols
+            else np.empty((data.shape[0], 0), dtype=np.int32)
+        )
+
+        self.col_local_index = {}
         for local_i, c in enumerate(numeric_cols):
             self.col_local_index[self._col_index[c]] = (True, local_i)
         for local_i, c in enumerate(categorical_cols):

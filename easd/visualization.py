@@ -7,9 +7,9 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from lifelines import KaplanMeierFitter
 
-plt.rcParams.update({"font.size": 20})
+plt.rcParams.update({"font.size": 12})
 
-POPULATION = "Baseline Population"
+POPULATION = "Population"
 COMPLEMENT = "Complement"
 
 
@@ -132,14 +132,34 @@ class RulesPlotter:
         fitter.plot_survival_function(ax=p_ax)
 
 
-def plot_topk_convergency(p_topk_best_fit: list, p_gen_best_fit: list):
-    gens_array = np.arange(len(p_gen_best_fit))
+def plot_topk_convergency(
+    p_topk_best_fit: list,
+    p_gen_mean_fit: list | None = None,
+    p_restart_gens: list[int] | None = None,
+):
     fig, ax = plt.subplots(figsize=(12, 10))
-    ax.plot(gens_array, p_gen_best_fit)
-    ax.plot(gens_array, p_topk_best_fit)
+    if p_gen_mean_fit is not None:
+        mean_gens_array = np.arange(1, len(p_gen_mean_fit) + 1)
+        ax.plot(mean_gens_array, p_gen_mean_fit, label="Population mean score")
+
+    topk_gens_array = np.arange(1, len(p_topk_best_fit) + 1)
+    ax.plot(topk_gens_array, p_topk_best_fit, label="Historical Top-K best score")
+
+    restart_label = "Population restart"
+    for restart_gen in p_restart_gens or []:
+        ax.axvline(
+            restart_gen,
+            color="#777777",
+            linestyle=":",
+            linewidth=1.5,
+            alpha=0.75,
+            label=restart_label,
+        )
+        restart_label = "_nolegend_"
+
     ax.grid()
-    ax.set_title("Score Convergency")
-    ax.legend(["Generations best score", "Top-K best score"])
+    ax.set_title("Score Convergence")
+    ax.legend()
     ax.set_xlabel("Generations")
     ax.set_ylabel("Score")
 
