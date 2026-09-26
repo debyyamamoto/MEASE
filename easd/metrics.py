@@ -333,10 +333,17 @@ def _rule_to_column_names(rule: Rule, dataset_obj: Optional[Dataset] = None) -> 
 def calculate_max_f1_score(
     df: pd.DataFrame, rules: Sequence[Rule], labels_array: np.ndarray, dataset_obj: Optional[Dataset] = None
 ):
+    if df is None or df.empty or not rules:
+        return 0.0
+
     f1_scores_list = []
     for rule in rules:
         rule_index = covered_indices(rule, df, dataset_obj=dataset_obj)
-        rule_hat = np.array([1 if i in rule_index else 0 for i in range(df.shape[0])]).astype(np.int64)
+        rule_hat = np.zeros(df.shape[0], dtype=np.int64)
+        if rule_index:
+            valid_index = np.asarray(rule_index, dtype=int)
+            valid_index = valid_index[(valid_index >= 0) & (valid_index < df.shape[0])]
+            rule_hat[valid_index] = 1
         f1_scores_list.append(f1_score(labels_array, rule_hat))
 
     return np.max(f1_scores_list)

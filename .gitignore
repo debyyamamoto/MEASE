@@ -218,3 +218,6 @@ __marimo__/
 # Data files
 *.png
 *.txt
+
+*.prof
+results/

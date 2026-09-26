@@ -10,7 +10,6 @@ class Dataset:
         self.average_survival = None
         self.events = ()
         self.attr_values = {}
-        self.data = None
 
         self._col_index = {}
         self._uncovered_cases = [True] * data.shape[0]
@@ -37,16 +36,86 @@ class Dataset:
         data.drop(columns=to_drop, inplace=True)
 
         col_names = list(data.columns.values)
-        self.attr_values = dict.fromkeys(col_names)
-        for name in col_names:
-            self.attr_values[name] = list(set(pd.unique(data[name])))
 
         self._col_index = dict.fromkeys(col_names)
         for name in col_names:
             self._col_index[name] = data.columns.get_loc(name)
 
+        self.attr_values = dict.fromkeys(col_names)
+        for name in col_names:
+            self.attr_values[name] = list(set(pd.unique(data[name])))
+
+        numeric_cols = [c for c in col_names if data[c].dtype != "string"]
+        categorical_cols = [c for c in col_names if data[c].dtype == "string"]
+
+        self.numeric_matrix = data[numeric_cols].to_numpy(dtype=np.float64)
+
+        self.categorical_codebooks = {
+            self._col_index[c]: {v: i for i, v in enumerate(self.attr_values[c])} for c in categorical_cols
+        }
+
+        self.categorical_matrix = (
+            np.column_stack(
+                [
+                    data[c].map(self.categorical_codebooks[self._col_index[c]]).to_numpy(dtype=np.int32)
+                    for c in categorical_cols
+                ]
+            )
+            if categorical_cols
+            else np.empty((data.shape[0], 0), dtype=np.int32)
+        )
+
+        self.col_local_index = {}
+        for local_i, c in enumerate(numeric_cols):
+            self.col_local_index[self._col_index[c]] = (True, local_i)
+        for local_i, c in enumerate(categorical_cols):
+            self.col_local_index[self._col_index[c]] = (False, local_i)
+
+        self.attr_values = dict.fromkeys(col_names)
+        for name in col_names:
+            self.attr_values[name] = list(set(pd.unique(data[name])))
+
+        numeric_cols = [c for c in col_names if data[c].dtype != "string"]
+        categorical_cols = [c for c in col_names if data[c].dtype == "string"]
+
+        self.numeric_matrix = data[numeric_cols].to_numpy(dtype=np.float64)
+
+        self.categorical_codebooks = {
+            self._col_index[c]: {v: i for i, v in enumerate(self.attr_values.get(c) or [])} for c in categorical_cols
+        }
+
+        self.categorical_matrix = (
+            np.column_stack(
+                [
+                    data[c].map(self.categorical_codebooks[self._col_index[c]]).to_numpy(dtype=np.int32)
+                    for c in categorical_cols
+                ]
+            )
+            if categorical_cols
+            else np.empty((data.shape[0], 0), dtype=np.int32)
+        )
+
+        self.col_local_index = {}
+        for local_i, c in enumerate(numeric_cols):
+            self.col_local_index[self._col_index[c]] = (True, local_i)
+        for local_i, c in enumerate(categorical_cols):
+            self.col_local_index[self._col_index[c]] = (False, local_i)
+
         self.data = np.array(data.values)
         return
+
+    def get_rule_mask(self, rule: list[list]) -> np.ndarray:
+        mask = np.ones(self.size, dtype=bool)
+        for attr_idx, interval in zip(rule[0], rule[1]):
+            is_numeric, local_idx = self.col_local_index[attr_idx]
+            if is_numeric:
+                col = self.numeric_matrix[:, local_idx]
+                mask &= (col >= interval[0]) & (col <= interval[1])
+            else:
+                codebook = self.categorical_codebooks[attr_idx]
+                codes = [codebook.get(v, -1) for v in interval]
+                mask &= np.isin(self.categorical_matrix[:, local_idx], codes)
+        return mask
 
     def _binarize_events(self, data: pd.DataFrame, event_col: str):
         data[event_col] = data[event_col].replace(min(data[event_col]), 0)

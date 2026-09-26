@@ -1,6 +1,7 @@
 import sys
 import argparse
 from pathlib import Path
+from easd.evaluation import SCORE_METRICS
 from easd.runner import RunConfig, run_dataset
 
 
@@ -23,12 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output_dir", type=Path, default=Path("results"), help="Directory for generated outputs.")
     parser.add_argument("--dataset_name", default=None, help="Optional name used in output files.")
     parser.add_argument("--seed", type=int, default=None, help="Seed for reproducibility.")
-    parser.add_argument("-th", "--threshold", type=float, default=0.9, help="Jaccard similarity threshold.")
+    parser.add_argument("-th", "--threshold", type=float, default=0.5, help="Jaccard similarity threshold.")
     parser.add_argument("-g", "--generations", type=int, default=500, help="Maximum number of generations.")
     parser.add_argument("-p", "--population", type=int, default=500, help="Population size.")
     parser.add_argument("--restart_gen", type=int, default=3, help="Generation limit without improvement.")
     parser.add_argument("--restart_pop", type=int, default=3, help="Population restart limit.")
-    parser.add_argument("--restart_pct", type=int, default=10, help="Population percentage restarted each time.")
+    parser.add_argument("--restart_pct", type=float, default=0.10, help="Population percentage restarted each time.")
     parser.add_argument(
         "-comp",
         "--comparacao",
@@ -37,6 +38,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Baseline group for the log-rank test.",
     )
     parser.add_argument("-a", "--alpha", type=float, default=0.5, help="Fitness alpha weight.")
+    parser.add_argument(
+        "--score_metric",
+        choices=SCORE_METRICS,
+        default="legacy_logrank",
+        help=(
+            "Fitness discrepancy metric. 'legacy_logrank' uses statsmodels survdiff; "
+            "'fast_logrank' uses a precomputed log-rank proxy; 'km_cvm' and 'km_abc' "
+            "use weighted Kaplan-Meier curve distances; 'mdir2', 'mdir3' and 'mdir4' "
+            "use scalable multiple-direction weighted log-rank proxies."
+        ),
+    )
+    parser.add_argument(
+        "--km_time_bins",
+        type=int,
+        default=512,
+        help="Maximum time grid size for km_cvm/km_abc/mdir*. Use 0 for exact event-time grid.",
+    )
+    parser.add_argument(
+        "--redundancy_penalty",
+        type=float,
+        default=0.0,
+        help="Strength of the Top-K survival-curve similarity penalty in [0, 1].",
+    )
+    parser.add_argument(
+        "--redundancy_similarity_threshold",
+        type=float,
+        default=0.5,
+        help="Penalize candidates whose Kaplan-Meier curve similarity exceeds this value.",
+    )
+    parser.add_argument(
+        "--archive_selection",
+        choices=["historical", "greedy"],
+        default="historical",
+        help="Archive update: historical scores or greedy reselection with raw genetic fitness.",
+    )
     parser.add_argument(
         "--rate_policy",
         choices=["adaptive", "fixed"],
@@ -79,6 +115,11 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         restart_pct=args.restart_pct,
         comparacao=args.comparacao,
         alpha=args.alpha,
+        score_metric=args.score_metric,
+        km_time_bins=None if args.km_time_bins <= 0 else args.km_time_bins,
+        redundancy_penalty=args.redundancy_penalty,
+        redundancy_similarity_threshold=args.redundancy_similarity_threshold,
+        archive_selection=args.archive_selection,
         ksize=args.ksize,
         plot_rank=args.plt_rank,
         threshold=args.threshold,

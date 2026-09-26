@@ -28,7 +28,7 @@ class RunConfig:
     population: int = 500
     restart_gen: int = 3
     restart_pop: int = 3
-    restart_pct: int = 10
+    restart_pct: float = 0.10
     comparacao: BASELINE = "complement"
     alpha: float = 0.5
     ksize: int = 10
@@ -36,6 +36,11 @@ class RunConfig:
     threshold: float = 0.9
     debug_performance: bool = False
     rate_policy: RATEPOLICY = "adaptive"
+    score_metric: str = "legacy_logrank"
+    km_time_bins: int | None = 512
+    redundancy_penalty: float = 0.0
+    redundancy_similarity_threshold: float = 0.9
+    archive_selection: Literal["historical", "greedy"] = "historical"
 
 
 @dataclass(frozen=True)
@@ -88,11 +93,16 @@ def run_dataset(config: RunConfig) -> RunSummary:
             coverage_threshold=config.threshold,
             debug_performance=config.debug_performance,
             rate_policy=config.rate_policy,
+            score_metric=config.score_metric,
+            km_time_bins=config.km_time_bins,
+            redundancy_penalty=config.redundancy_penalty,
+            redundancy_similarity_threshold=config.redundancy_similarity_threshold,
+            archive_selection=config.archive_selection,
         )
 
         _, _, _, runtime, _, info, detailed_rules, top_rules, mean_rule_size, figures = sd.run()
         run_metrics = compute_run_metrics(
-            data,
+            sd.dataset_obj.get_data(),
             top_rules,
             time_col=config.time_col,
             event_col=config.event_col,
@@ -108,7 +118,7 @@ def run_dataset(config: RunConfig) -> RunSummary:
         _save_run_outputs(
             dataset_name=dataset_name,
             baseline=config.comparacao,
-            run=run + 28,
+            run=run,
             detailed_rules=detailed_rules,
             runtime=float(runtime),
             mean_rule_size=float(mean_rule_size),
@@ -173,7 +183,13 @@ def _topk_rule_score_metrics(detailed_rules: pd.DataFrame) -> dict[str, float]:
     scores = pd.to_numeric(detailed_rules["Rule_Score"], errors="coerce").dropna()
     if scores.empty:
         return {"mean_rule_score": 0.0}
-    return {"mean_rule_score": float(scores.mean())}
+
+    metrics = {"mean_rule_score": float(scores.mean())}
+    if "Penalized_Rule_Score" in detailed_rules.columns:
+        penalized_scores = pd.to_numeric(detailed_rules["Penalized_Rule_Score"], errors="coerce").dropna()
+        if not penalized_scores.empty:
+            metrics["mean_penalized_rule_score"] = float(penalized_scores.mean())
+    return metrics
 
 
 def _save_run_outputs(
