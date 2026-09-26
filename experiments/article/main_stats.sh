@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Fixed protocol used for the article experiments.
-RESULTS_DIR="experiments/results"
+RESULTS_DIR="experiments/results_mdir2"
 EXECUTIONS="30"
 GENERATIONS="500"
 POPULATION="500"
@@ -11,7 +11,8 @@ RESTART_POP="5"
 RESTART_PCT="10"
 ALPHA="0.10"
 KSIZE="10"
-THRESHOLD="0.9"
+THRESHOLD="0.5"
+SCORE_METRIC="mdir2"
 DEBUG_PERFORMANCE="off"
 
 DATASETS=(
@@ -38,6 +39,7 @@ for dataset_spec in "${DATASETS[@]}"; do
       --dataset_name "${dataset_name}" \
       --time_col "${time_col}" \
       --event_col "${event_col}" \
+      --score_metric "${SCORE_METRIC}" \
       --output_dir "${RESULTS_DIR}" \
       --executions "${EXECUTIONS}" \
       --generations "${GENERATIONS}" \

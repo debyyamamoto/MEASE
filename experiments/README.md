@@ -42,25 +42,6 @@ By default this compares `experiments/resultados_complement.csv` against
 `experiments/results_esmam/metrics_baseline-complement.csv` and saves
 `experiments/wilcoxon.csv`.
 
-## Score Metric Benchmarks
-
-Use the synthetic planted-rule generator to compare the legacy log-rank fitness
-against faster discrepancy proxies:
-
-```bash
-uv run python experiments/artificial_datsets/score_metric_benchmark.py \
-  --subjects 10000 50000 100000 \
-  --metrics legacy_logrank fast_logrank km_cvm km_abc mdir2 mdir4 \
-  --generations 5 \
-  --population 80 \
-  --ksize 5
-```
-
-The script writes a reproducible CSV with runtime, F1 against the planted
-`subgroup` label, Top-K mean score, coverage, and exceptionality. Pass
-`--output-dir /tmp/mease_score_benchmark` to keep large synthetic artifacts out
-of the repository.
-
 ## Quantitative Methods Experiments
 
 The planned factorial experiments for runtime, exceptionality, and MEASE versus
