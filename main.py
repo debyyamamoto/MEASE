@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--archive_selection",
         choices=["historical", "greedy"],
-        default="historical",
+        default="greedy",
         help="Archive update: historical scores or greedy reselection with raw genetic fitness.",
     )
     parser.add_argument(
@@ -78,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["adaptive", "fixed"],
         default="adaptive",
         help="Crossover/mutation policy. Fixed uses crossover=60%% and mutation=40%%.",
+    )
+    parser.add_argument(
+        "--min_rule_support", type=float, default=0.05, help="Min relative support for a rule to accepted in top-k"
+    )
+    parser.add_argument(
+        "--max_rule_support", type=float, default=0.05, help="Max relative support for a rule to accepted in top-k"
     )
     parser.add_argument("-exe", "--executions", type=int, default=1, help="Independent algorithm executions.")
     parser.add_argument("-k", "--ksize", type=int, default=10, help="Top-K rule rank size.")
@@ -108,12 +114,15 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         dataset_name=args.dataset_name,
         seed=args.seed,
         executions=args.executions,
+        rate_policy=args.rate_policy,
         generations=args.generations,
         population=args.population,
         restart_gen=args.restart_gen,
         restart_pop=args.restart_pop,
         restart_pct=args.restart_pct,
         comparacao=args.comparacao,
+        min_relative_supp=args.min_rule_support,
+        max_relative_supp=args.max_rule_support,
         alpha=args.alpha,
         score_metric=args.score_metric,
         km_time_bins=None if args.km_time_bins <= 0 else args.km_time_bins,
@@ -124,7 +133,6 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         plot_rank=args.plt_rank,
         threshold=args.threshold,
         debug_performance=args.debug_performance == "on",
-        rate_policy=args.rate_policy,
     )
 
 
