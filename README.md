@@ -62,6 +62,15 @@ compares both modes and documents remaining statistical and reproducibility limi
 
 ## Article Experiments
 
+Run the reproducible Random Search (300 configurations × six datasets):
+
+```bash
+bash experiments/article/random_search.sh
+```
+
+See the [Random Search instructions](experiments/article/README.md) for fixed
+seeds, saved manifests, `--dry-run`, and resuming interrupted searches.
+
 Run the full article protocol:
 
 ```bash
