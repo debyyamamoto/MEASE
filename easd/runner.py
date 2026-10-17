@@ -41,6 +41,8 @@ class RunConfig:
     redundancy_penalty: float = 0.0
     redundancy_similarity_threshold: float = 0.9
     archive_selection: Literal["historical", "greedy"] = "historical"
+    min_relative_supp: float = 0.05
+    max_relative_supp: float = 0.55
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,8 @@ def run_dataset(config: RunConfig) -> RunSummary:
             redundancy_penalty=config.redundancy_penalty,
             redundancy_similarity_threshold=config.redundancy_similarity_threshold,
             archive_selection=config.archive_selection,
+            min_relative_supp=config.min_relative_supp,
+            max_relative_supp=config.max_relative_supp,
         )
 
         _, _, _, runtime, _, info, detailed_rules, top_rules, mean_rule_size, figures = sd.run()

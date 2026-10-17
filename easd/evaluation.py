@@ -1,7 +1,4 @@
 from __future__ import annotations
-
-from typing import Literal
-
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
@@ -20,8 +17,6 @@ SCORE_METRICS: tuple[str, ...] = (
 KM_GRID_SCORE_METRICS = ("km_cvm", "km_abc", "mdir2", "mdir3", "mdir4")
 MDIR_SCORE_METRICS = ("mdir2", "mdir3", "mdir4")
 
-MIN_RELATIVE_SUPPORT = 0.05
-MAX_RELATIVE_SUPPORT = 0.55
 EPSILON = 1e-12
 
 MDIR_WEIGHT_SETS: dict[str, tuple[tuple[int, int] | str, ...]] = {
@@ -41,6 +36,8 @@ class RuleEvaluator:
         km_time_bins: int | None = 512,
         redundancy_penalty: float = 0.0,
         redundancy_similarity_threshold: float = 0.9,
+        min_relative_supp: float = 0.05,
+        max_relative_supp: float = 0.55,
     ):
         if comparacao not in ("complement", "population"):
             raise ValueError("comparacao must be either 'complement' or 'population'.")
@@ -68,6 +65,8 @@ class RuleEvaluator:
         self._time_values = self._survival_times.to_numpy(dtype=float, copy=False)
         self._event_values = self._events.to_numpy(dtype=int, copy=False)
         self._event_observed = self._event_values.astype(bool)
+        self.min_relative_supp = min_relative_supp
+        self.max_relative_supp = max_relative_supp
 
         self._logrank_gamma = np.zeros(self._n, dtype=float)
         self._logrank_residual = self._event_values.astype(float)
@@ -125,7 +124,7 @@ class RuleEvaluator:
             return 0.0
 
         relative_support = covered_count / self._n
-        if relative_support > MAX_RELATIVE_SUPPORT or relative_support < MIN_RELATIVE_SUPPORT:
+        if relative_support > self.max_relative_supp or relative_support < self.min_relative_supp:
             return 0.0
 
         if covered_count >= self._n:

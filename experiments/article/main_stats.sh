@@ -2,17 +2,20 @@
 set -euo pipefail
 
 # Fixed protocol used for the article experiments.
-RESULTS_DIR="experiments/results_mdir2"
+RESULTS_DIR="experiments/results_km_abc_greedy"
 EXECUTIONS="30"
 GENERATIONS="500"
 POPULATION="500"
 RESTART_GEN="5"
 RESTART_POP="5"
-RESTART_PCT="10"
+RESTART_PCT="0.10"
 ALPHA="0.10"
 KSIZE="10"
 THRESHOLD="0.5"
-SCORE_METRIC="mdir2"
+SCORE_METRIC="km_abc"
+REDUNDANCY_PENALTY="1.0"
+REDUNDANCY_SIMILARITY_THRESHOLD="0.5"
+ARCHIVE_SELECTION="greedy"
 DEBUG_PERFORMANCE="off"
 
 DATASETS=(
@@ -51,6 +54,9 @@ for dataset_spec in "${DATASETS[@]}"; do
       --alpha "${ALPHA}" \
       --ksize "${KSIZE}" \
       --threshold "${THRESHOLD}" \
+      --redundancy_penalty "${REDUNDANCY_PENALTY}" \
+      --redundancy_similarity_threshold "${REDUNDANCY_SIMILARITY_THRESHOLD}" \
+      --archive_selection "${ARCHIVE_SELECTION}" \
       --debug_performance "${DEBUG_PERFORMANCE}"
   done
 done

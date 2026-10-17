@@ -1,5 +1,9 @@
 # Experiments
 
+For the reproducible Random Search (300 configurations across six datasets), run
+`bash experiments/article/random_search.sh`. See the [Random Search protocol](article/README.md)
+for seeds, manifests, previewing commands and resuming interrupted experiments.
+
 This directory contains aggregation, statistical tests, and generated outputs
 for the article. The fixed article protocol lives in `main_stats.sh`, which
 calls the generic `main.py` command with the paper datasets and parameters.
