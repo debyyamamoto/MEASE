@@ -24,12 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output_dir", type=Path, default=Path("results"), help="Directory for generated outputs.")
     parser.add_argument("--dataset_name", default=None, help="Optional name used in output files.")
     parser.add_argument("--seed", type=int, default=None, help="Seed for reproducibility.")
-    parser.add_argument("-th", "--threshold", type=float, default=0.5, help="Jaccard similarity threshold.")
+    parser.add_argument("-th", "--threshold", type=float, default=0.30, help="Jaccard similarity threshold.")
     parser.add_argument("-g", "--generations", type=int, default=500, help="Maximum number of generations.")
-    parser.add_argument("-p", "--population", type=int, default=500, help="Population size.")
+    parser.add_argument("-p", "--population", type=int, default=800, help="Population size.")
     parser.add_argument("--restart_gen", type=int, default=3, help="Generation limit without improvement.")
     parser.add_argument("--restart_pop", type=int, default=3, help="Population restart limit.")
-    parser.add_argument("--restart_pct", type=float, default=0.10, help="Population percentage restarted each time.")
+    parser.add_argument("--restart_pct", type=float, default=0.60, help="Population percentage restarted each time.")
     parser.add_argument(
         "-comp",
         "--comparacao",
@@ -37,11 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="complement",
         help="Baseline group for the log-rank test.",
     )
-    parser.add_argument("-a", "--alpha", type=float, default=0.5, help="Fitness alpha weight.")
+    parser.add_argument("-a", "--alpha", type=float, default=0.30, help="Fitness alpha weight.")
     parser.add_argument(
         "--score_metric",
         choices=SCORE_METRICS,
-        default="legacy_logrank",
+        default="fast_logrank",
         help=(
             "Fitness discrepancy metric. 'legacy_logrank' uses statsmodels survdiff; "
             "'fast_logrank' uses a precomputed log-rank proxy; 'km_cvm' and 'km_abc' "
@@ -53,24 +53,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--km_time_bins",
         type=int,
         default=512,
-        help="Maximum time grid size for km_cvm/km_abc/mdir*. Use 0 for exact event-time grid.",
+        help="Maximum time grid size for km_cvm/km_abc/mdir*, curve similarity and mean_pairwise_rms. Use 0 for exact event-time grid.",
     )
     parser.add_argument(
         "--redundancy_penalty",
         type=float,
-        default=0.0,
+        default=0.50,
         help="Strength of the Top-K survival-curve similarity penalty in [0, 1].",
     )
     parser.add_argument(
         "--redundancy_similarity_threshold",
         type=float,
-        default=0.5,
+        default=0.50,
         help="Penalize candidates whose Kaplan-Meier curve similarity exceeds this value.",
     )
     parser.add_argument(
         "--archive_selection",
         choices=["historical", "greedy"],
-        default="historical",
+        default="greedy",
         help="Archive update: historical scores or greedy reselection with raw genetic fitness.",
     )
     parser.add_argument(
@@ -79,8 +79,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="adaptive",
         help="Crossover/mutation policy. Fixed uses crossover=60%% and mutation=40%%.",
     )
+    parser.add_argument(
+        "--min_rule_support", type=float, default=0.05, help="Min relative support for a rule to accepted in top-k"
+    )
+    parser.add_argument(
+        "--max_rule_support", type=float, default=0.45, help="Max relative support for a rule to accepted in top-k"
+    )
     parser.add_argument("-exe", "--executions", type=int, default=1, help="Independent algorithm executions.")
-    parser.add_argument("-k", "--ksize", type=int, default=10, help="Top-K rule rank size.")
+    parser.add_argument("-k", "--ksize", type=int, default=5, help="Top-K rule rank size.")
     parser.add_argument(
         "-plt",
         "--plt_rank",
@@ -108,12 +114,15 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         dataset_name=args.dataset_name,
         seed=args.seed,
         executions=args.executions,
+        rate_policy=args.rate_policy,
         generations=args.generations,
         population=args.population,
         restart_gen=args.restart_gen,
         restart_pop=args.restart_pop,
         restart_pct=args.restart_pct,
         comparacao=args.comparacao,
+        min_relative_supp=args.min_rule_support,
+        max_relative_supp=args.max_rule_support,
         alpha=args.alpha,
         score_metric=args.score_metric,
         km_time_bins=None if args.km_time_bins <= 0 else args.km_time_bins,
@@ -124,7 +133,6 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         plot_rank=args.plt_rank,
         threshold=args.threshold,
         debug_performance=args.debug_performance == "on",
-        rate_policy=args.rate_policy,
     )
 
 

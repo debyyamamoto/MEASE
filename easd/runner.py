@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from dataclasses import dataclass, field
 from typing import Literal
 from pathlib import Path
@@ -41,6 +42,8 @@ class RunConfig:
     redundancy_penalty: float = 0.0
     redundancy_similarity_threshold: float = 0.9
     archive_selection: Literal["historical", "greedy"] = "historical"
+    min_relative_supp: float = 0.05
+    max_relative_supp: float = 0.55
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,8 @@ def run_dataset(config: RunConfig) -> RunSummary:
     metrics_list: list[dict] = []
 
     for run in range(config.executions):
+        if os.path.exists(output_dir / f"{dataset_name}_{run}_{config.comparacao}_DetailedRules.csv"):
+            continue
         seed = config.seed if config.seed is not None else run
         print(f"--- Running dataset {dataset_name} ({run + 1}/{config.executions}) ---")
 
@@ -98,6 +103,8 @@ def run_dataset(config: RunConfig) -> RunSummary:
             redundancy_penalty=config.redundancy_penalty,
             redundancy_similarity_threshold=config.redundancy_similarity_threshold,
             archive_selection=config.archive_selection,
+            min_relative_supp=config.min_relative_supp,
+            max_relative_supp=config.max_relative_supp,
         )
 
         _, _, _, runtime, _, info, detailed_rules, top_rules, mean_rule_size, figures = sd.run()
@@ -108,6 +115,7 @@ def run_dataset(config: RunConfig) -> RunSummary:
             event_col=config.event_col,
             dataset_obj=sd.dataset_obj,
             baseline=config.comparacao,
+            km_time_bins=config.km_time_bins,
         ).as_dict()
         run_metrics.update(_topk_rule_score_metrics(detailed_rules))
         metrics_list.append(run_metrics)
@@ -212,7 +220,12 @@ def _save_run_outputs(
 
     detailed_rules.to_csv(output_dir / f"{dataset_name}_{run}_{baseline}_DetailedRules.csv", index=False)
     info.to_csv(output_dir / f"{dataset_name}_{run}_{baseline}_Info.csv", index=False)
-    pd.DataFrame([metrics]).round(2).to_csv(
+    exported_metrics = pd.DataFrame([metrics]).round(2)
+    # Retain enough precision for small differences in geometric separation.
+    if "mean_pairwise_rms" in metrics:
+        value = metrics["mean_pairwise_rms"]
+        exported_metrics["mean_pairwise_rms"] = f"{value:.8f}" if np.isfinite(value) else np.nan
+    exported_metrics.to_csv(
         output_dir / f"{dataset_name}_{run}_{baseline}_RulesMetricsResult.csv",
         index=False,
         float_format="%.4f",

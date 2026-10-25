@@ -1,0 +1,6 @@
+experiment,factor,ksize,dataset,response
+ksize,ksize_2,2,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+ksize,ksize_3,3,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+ksize,ksize_5,5,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+ksize,ksize_7,7,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+ksize,ksize_10,10,mgus2|datasets/files/mgus2.parquet|futime|status|,all
