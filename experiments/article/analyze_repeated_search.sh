@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Analyze the complete repeated experiment and write a Portuguese report.
+# Analyze repeated runs or the original Random Search (--mode single).
 set -euo pipefail
 REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd -- "$REPO_ROOT"

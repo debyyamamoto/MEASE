@@ -38,7 +38,7 @@ Results are written to `results/<dataset>/<baseline>/`.
 | `-comp`, `--comparacao` | no | `complement` or `population` baseline | `complement` |
 | `-a`, `--alpha` | no | Fitness alpha weight | `0.5` |
 | `--score_metric` | no | `legacy_logrank`, `fast_logrank`, `km_cvm`, `km_abc`, `mdir2`, `mdir3`, or `mdir4` | `legacy_logrank` |
-| `--km_time_bins` | no | Maximum time grid size for `km_cvm`/`km_abc`/`mdir*`; use `0` for exact event-time grid | `512` |
+| `--km_time_bins` | no | Maximum time grid size for `km_cvm`/`km_abc`/`mdir*`, curve similarity and `mean_pairwise_rms`; use `0` for exact event-time grid | `512` |
 | `--redundancy_penalty` | no | Strength of the Top-K curve-similarity penalty in `[0, 1]` | `0.0` |
 | `--redundancy_similarity_threshold` | no | Penalize KM curve similarities above this value | `0.5` |
 | `--archive_selection` | no | `historical` update or experimental `greedy` reselection | `historical` |
@@ -61,6 +61,14 @@ The [greedy archive pilot report](experiments/results_greedy_analysis/relatorio.
 compares both modes and documents remaining statistical and reproducibility limits.
 
 ## Article Experiments
+
+Every run also exports `mean_pairwise_rms`, the mean time- and risk-weighted RMS
+distance between complete subgroup survival curves. Higher values indicate more
+curve separation. `rms_valid_pairs` records how many pairs contributed; unavailable
+distances are missing values, not zero or maximal separation. The metric is
+independent of the chosen fitness and is collected by `experiments/collect_results.py`.
+See [the mathematical definition and article-ready explanation](docs/mean_pairwise_rms.md)
+for weighting, grid approximation, interpretation and limitations.
 
 Run the reproducible Random Search (300 configurations × six datasets):
 

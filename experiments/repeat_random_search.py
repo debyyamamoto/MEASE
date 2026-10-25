@@ -1,4 +1,5 @@
 """Frozen, resumable repetitions of candidates selected from a shell Random Search."""
+
 from __future__ import annotations
 
 import argparse
@@ -20,9 +21,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from experiments.analyze_random_search import CONTEXT, METRICS, RECORDED, parse_config, rank_panel, read_results
 
-PARAMETERS = ("score_metric threshold generations population restart_gen restart_pop "
-              "restart_pct alpha redundancy_penalty redundancy_similarity_threshold "
-              "ksize min_rule_support max_rule_support").split()
+PARAMETERS = (
+    "score_metric threshold generations population restart_gen restart_pop "
+    "restart_pct alpha redundancy_penalty redundancy_similarity_threshold "
+    "ksize min_rule_support max_rule_support"
+).split()
 DEFAULT_OUTPUT = "experiments/repeated_random_search"
 
 
@@ -39,8 +42,8 @@ def write_json(path, value):
 
 
 @contextmanager
-def lock(directory):
-    path = directory / ".repetitions.lock"
+def lock(directory, name=".repetitions.lock"):
+    path = directory / name
     try:
         path.mkdir()
     except FileExistsError:
@@ -51,7 +54,8 @@ def lock(directory):
         path.rmdir()
 
 
-def read_source_protocol(source):
+def read_source_manifest(source):
+    """Read the saved search metadata without requiring the current code version."""
     fields, datasets, hashes = {}, [], {}
     for line in (source / "protocol.txt").read_text().splitlines():
         if line.startswith("dataset="):
@@ -64,13 +68,25 @@ def read_source_protocol(source):
             fields[key] = value
     if fields.get("protocol") != "mease-random-search-shell-v1" or not datasets:
         raise ValueError("Expected a completed article/random_search.sh protocol")
-    required = {"main.py", "uv.lock", "pyproject.toml", *[str(p.relative_to(ROOT)) for p in (ROOT / "easd").glob("*.py")],
-                *[d["path"] for d in datasets]}
+    return fields, datasets, hashes
+
+
+def read_source_protocol(source):
+    fields, datasets, hashes = read_source_manifest(source)
+    required = {
+        "main.py",
+        "uv.lock",
+        "pyproject.toml",
+        *[str(p.relative_to(ROOT)) for p in (ROOT / "easd").glob("*.py")],
+        *[d["path"] for d in datasets],
+    }
     if not required.issubset(hashes):
         raise ValueError("Incomplete source code/data fingerprints")
     for name, digest in hashes.items():
         if sha256(ROOT / name) != digest:
-            raise ValueError(f"Code/data differ from Random Search: {name}. Use matching versions; do not mix implementations.")
+            raise ValueError(
+                f"Code/data differ from Random Search: {name}. Use matching versions; do not mix implementations."
+            )
     return fields, datasets, hashes
 
 
@@ -78,8 +94,11 @@ def verify_shell_run(folder):
     """Check all original outputs and command, not just three Info.csv fields."""
     marker = folder / ".complete"
     expected_names = {"command.sh"}
-    expected_names.update(p.name for p in folder.glob("*_0_*_*.csv") if any(
-        p.name.endswith(f"_{suffix}.csv") for suffix in ("Info", "DetailedRules", "RulesMetricsResult")))
+    expected_names.update(
+        p.name
+        for p in folder.glob("*_0_*_*.csv")
+        if any(p.name.endswith(f"_{suffix}.csv") for suffix in ("Info", "DetailedRules", "RulesMetricsResult"))
+    )
     if len(expected_names) != 4:
         raise ValueError(f"Incomplete Random Search run: {folder}")
     recorded = {}
@@ -98,13 +117,17 @@ def prepare_plan(args):
     configs, runs = read_results(source, fields["baseline"])
     if len(configs) != int(fields["num_configs"]):
         raise ValueError("Configuration count differs from source protocol")
-    expected = pd.MultiIndex.from_product([range(len(configs)), [d["name"] for d in datasets], [0]],
-                                         names=["config_id", "dataset", "run"])
+    expected = pd.MultiIndex.from_product(
+        [range(len(configs)), [d["name"] for d in datasets], [0]], names=["config_id", "dataset", "run"]
+    )
     actual = pd.MultiIndex.from_frame(runs[["config_id", "dataset", "run"]])
     if len(actual) != len(expected) or len(expected.difference(actual)) or not runs.metadata_matches.all():
         raise ValueError("Random Search must have a complete, consistent panel of all configurations and datasets")
-    context = dict(archive_selection=fields["archive_selection"], rate_policy=fields["rate_policy"],
-                   km_time_bins=int(fields["km_time_bins"]))
+    context = dict(
+        archive_selection=fields["archive_selection"],
+        rate_policy=fields["rate_policy"],
+        km_time_bins=int(fields["km_time_bins"]),
+    )
     for key, value in context.items():
         if not runs[key].eq(value).all():
             raise ValueError(f"Inconsistent source context: {key}")
@@ -116,9 +139,16 @@ def prepare_plan(args):
         # Check the actual saved invocation against ALL parameters, not only Info.csv.
         lines = (folder / "command.sh").read_text().splitlines()
         tokens = shlex.split(lines[-1])
-        expected_flags = {**configs[cid], **context, "seed": fields["run_seed"], "executions": "1",
-                          "comparacao": fields["baseline"], "dataset_name": dataset["name"],
-                          "time_col": dataset["time_col"], "event_col": dataset["event_col"]}
+        expected_flags = {
+            **configs[cid],
+            **context,
+            "seed": fields["run_seed"],
+            "executions": "1",
+            "comparacao": fields["baseline"],
+            "dataset_name": dataset["name"],
+            "time_col": dataset["time_col"],
+            "event_col": dataset["event_col"],
+        }
         for key, value in expected_flags.items():
             flag = "--" + key
             if tokens.count(flag) != 1 or tokens.index(flag) == len(tokens) - 1:
@@ -154,26 +184,64 @@ def prepare_plan(args):
     snapshots += [Path(p) for p in runs.source]
     source_hashes = {str(p.relative_to(source)): sha256(p) for p in snapshots}
     # Both entrypoints, planner and selection policy are part of the execution protocol.
-    code = ["experiments/repeat_random_search.py", "experiments/analyze_random_search.py",
-            "experiments/article/repeat_random_search.sh"]
+    code = [
+        "experiments/repeat_random_search.py",
+        "experiments/analyze_random_search.py",
+        "experiments/article/repeat_random_search.sh",
+    ]
     hashes = {**original_hashes, **{name: sha256(ROOT / name) for name in code}}
     jobs = [[cid, d["name"], seed] for seed in seeds for d in datasets for cid in ids]
     random.Random(args.order_seed).shuffle(jobs)
-    return dict(protocol="mease-repetitions-v1", source=str(source), source_hashes=source_hashes,
-                hashes=hashes, baseline=fields["baseline"], fixed=context, plot_rank=args.plot_rank,
-                selection="explicit IDs" if args.config_ids else "equal metric/dataset mean ranks; ties ordered by ID",
-                configs=selected, config_ids=ids, datasets=datasets, seeds=seeds,
-                repetitions=args.repetitions, order_seed=args.order_seed, jobs=jobs,
-                python_hash_seed="0", environment=dict(python=platform.python_version(), platform=platform.platform())), ranking
+    return (
+        dict(
+            protocol="mease-repetitions-v1",
+            source=str(source),
+            source_hashes=source_hashes,
+            hashes=hashes,
+            baseline=fields["baseline"],
+            fixed=context,
+            plot_rank=args.plot_rank,
+            selection="explicit IDs" if args.config_ids else "equal metric/dataset mean ranks; ties ordered by ID",
+            configs=selected,
+            config_ids=ids,
+            datasets=datasets,
+            seeds=seeds,
+            repetitions=args.repetitions,
+            order_seed=args.order_seed,
+            jobs=jobs,
+            python_hash_seed="0",
+            environment=dict(python=platform.python_version(), platform=platform.platform()),
+        ),
+        ranking,
+    )
 
 
 def command_for(plan, output, cid, dataset, seed):
     spec = next(d for d in plan["datasets"] if d["name"] == dataset)
     base = output / f"config_{cid}" / f"seed_{seed}"
-    command = [sys.executable, str(ROOT / "main.py"), str(ROOT / spec["path"]),
-               "--dataset_name", dataset, "--time_col", spec["time_col"], "--event_col", spec["event_col"],
-               "--output_dir", str(base), "--seed", str(seed), "--executions", "1",
-               "--comparacao", plan["baseline"], "--plt_rank", str(plan["plot_rank"]), "--debug_performance", "off"]
+    command = [
+        sys.executable,
+        str(ROOT / "main.py"),
+        str(ROOT / spec["path"]),
+        "--dataset_name",
+        dataset,
+        "--time_col",
+        spec["time_col"],
+        "--event_col",
+        spec["event_col"],
+        "--output_dir",
+        str(base),
+        "--seed",
+        str(seed),
+        "--executions",
+        "1",
+        "--comparacao",
+        plan["baseline"],
+        "--plt_rank",
+        str(plan["plot_rank"]),
+        "--debug_performance",
+        "off",
+    ]
     for key, value in {**plan["fixed"], **plan["configs"][str(cid)]}.items():
         command.extend(["--" + key, str(value)])
     folder = base / dataset / plan["baseline"]
@@ -197,6 +265,7 @@ def precise_metrics(plan, folder, dataset, cache):
     """Re-evaluate exported rules to avoid the CLI's two-decimal metric rounding."""
     from easd.dataset import Dataset
     from easd.metrics import compute_run_metrics, covered_indices
+
     spec = next(d for d in plan["datasets"] if d["name"] == dataset)
     if dataset not in cache:
         cache[dataset] = Dataset(pd.read_parquet(ROOT / spec["path"]), spec["time_col"], spec["event_col"])
@@ -207,15 +276,22 @@ def precise_metrics(plan, folder, dataset, cache):
     # compute_run_metrics catches coverage errors internally; reject malformed exported rules explicitly.
     for rule in rules:
         covered_indices(rule, obj.get_data(), dataset_obj=obj)
-    values = compute_run_metrics(obj.get_data(), rules, spec["time_col"], spec["event_col"],
-                                 dataset_obj=obj, baseline=plan["baseline"]).as_dict()
+    values = compute_run_metrics(
+        obj.get_data(),
+        rules,
+        spec["time_col"],
+        spec["event_col"],
+        dataset_obj=obj,
+        baseline=plan["baseline"],
+        km_time_bins=plan.get("fixed", {}).get("km_time_bins", 512),
+    ).as_dict()
     saved, info = pd.read_csv(saved_path), pd.read_csv(info_path)
     if len(saved) != 1 or len(info) != 1:
         raise ValueError(f"Expected one run per CSV: {folder}")
     validate_metrics(values)
     validate_metrics(saved.iloc[0])
     for key in [*METRICS, "#sg"]:
-        if abs(values[key] - saved.iloc[0][key]) > .00501:
+        if abs(values[key] - saved.iloc[0][key]) > 0.00501:
             raise ValueError(f"Recomputed metric disagrees with CLI: {folder}: {key}")
     return values
 
@@ -227,7 +303,8 @@ def completed(folder, required):
     try:
         hashes = json.loads(marker.read_text())
         return set(hashes) == {p.name for p in required} and all(
-            p.is_file() and sha256(p) == hashes[p.name] for p in required)
+            p.is_file() and sha256(p) == hashes[p.name] for p in required
+        )
     except (ValueError, OSError):
         return False
 
@@ -256,8 +333,9 @@ def run_plan(plan, output, dry_run=False, max_runs=None):
         (folder / ".complete.json").unlink(missing_ok=True)
         print(f"Running config_{cid} / {dataset} / seed {seed}", flush=True)
         with (folder / "run.log").open("w") as log:
-            result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                                    env={**os.environ, "PYTHONHASHSEED": "0"})
+            result = subprocess.run(
+                command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, env={**os.environ, "PYTHONHASHSEED": "0"}
+            )
         if result.returncode:
             raise RuntimeError(f"MEASE exited {result.returncode}; see {folder / 'run.log'}")
         for path in required[1:-1]:
@@ -278,7 +356,9 @@ def main():
     parser.add_argument("--source", type=Path, default=Path("experiments/random_search_shell"))
     parser.add_argument("--output-dir", type=Path, default=Path(DEFAULT_OUTPUT))
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--top-k", type=int, default=10)
+    group.add_argument(
+        "--top-k", type=int, default=10, help="Choose the Top-K best configurations found on random search"
+    )
     group.add_argument("--config-ids", type=int, nargs="+")
     parser.add_argument("--repetitions", "-r", type=int, default=30)
     parser.add_argument("--seed-start", type=int, default=1)
@@ -297,17 +377,23 @@ def main():
         manifest = output / "plan.json"
         if manifest.exists():
             if json.loads(manifest.read_text()) != plan:
-                raise ValueError("Frozen plan differs (selection, parameters, seeds, code, data or environment). Use a new directory.")
+                raise ValueError(
+                    "Frozen plan differs (selection, parameters, seeds, code, data or environment). Use a new directory."
+                )
         else:
             if any(p.name != ".repetitions.lock" for p in output.iterdir()):
                 raise ValueError("Nonempty directory without plan.json; choose a new output directory")
             write_json(manifest, plan)
         ranking.to_csv(output / "selection_ranking.csv", index=False)
         selected = ranking.set_index("config_id").loc[plan["config_ids"]].reset_index()
-        selected.merge(pd.DataFrame([dict(config_id=int(k), **v) for k, v in plan["configs"].items()]),
-                       on="config_id").to_csv(output / "selected_configs.csv", index=False)
-        print(f"Configs {plan['config_ids']}; {len(plan['datasets'])} datasets; r={plan['repetitions']}; "
-              f"{len(plan['jobs'])} runs; seeds {plan['seeds'][0]}..{plan['seeds'][-1]}", flush=True)
+        selected.merge(
+            pd.DataFrame([dict(config_id=int(k), **v) for k, v in plan["configs"].items()]), on="config_id"
+        ).to_csv(output / "selected_configs.csv", index=False)
+        print(
+            f"Configs {plan['config_ids']}; {len(plan['datasets'])} datasets; r={plan['repetitions']}; "
+            f"{len(plan['jobs'])} runs; seeds {plan['seeds'][0]}..{plan['seeds'][-1]}",
+            flush=True,
+        )
         run_plan(plan, output, args.dry_run, args.max_runs)
     print(f"Experiment: {output}")
 

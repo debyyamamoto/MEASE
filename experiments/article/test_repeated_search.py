@@ -12,8 +12,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from experiments.analyze_repeated_search import analyze, friedman, holm, load_panel, mean_ci, plots, report
-from experiments.repeat_random_search import command_for, run_plan, write_json, precise_metrics, ROOT
+from experiments.analyze_repeated_search import analyze, friedman, load_panel, load_single_panel, plots, report
+from experiments.repeat_random_search import command_for, run_plan, write_json, precise_metrics, sha256, ROOT
 
 
 def fixture_plan():
@@ -39,66 +39,207 @@ def fixture_runs(n=6, r=30):
 
 
 class StatisticsTests(unittest.TestCase):
-    def test_tied_friedman_matches_scipy_and_enumeration(self):
+    def test_tied_friedman_matches_scipy(self):
         matrix = np.array([[1, 2, 2], [3, 2, 1], [2, 4, 4]])
-        ranks, result = friedman(matrix, True, 39999, np.random.default_rng(7))
+        ranks, result = friedman(matrix, True)
         reference = stats.friedmanchisquare(*matrix.T)
+        np.testing.assert_allclose(ranks[0], [1, 2.5, 2.5])
         self.assertAlmostEqual(result["friedman_chi2"], reference.statistic)
         self.assertAlmostEqual(result["p_chi2"], reference.pvalue)
-        observed = np.sum((ranks.sum(axis=0) - 6)**2)
-        null = [sum((np.sum(rows, axis=0) - 6)**2) for rows in
-                itertools.product(*[list(itertools.permutations(row)) for row in ranks])]
-        exact = np.mean(np.asarray(null) >= observed)
-        self.assertAlmostEqual(result["p_permutation"], exact, delta=.015)
+        expected_f = 2 * reference.statistic / (6 - reference.statistic)
+        self.assertAlmostEqual(result["iman_davenport_f"], expected_f)
+        self.assertAlmostEqual(result["p_value"], stats.f.sf(expected_f, 2, 4))
 
     def test_all_ties_and_perfect_ordering(self):
-        _, tied = friedman(np.ones((6, 3)), True, 999, np.random.default_rng(0))
-        self.assertEqual(tied["p_permutation"], 1)
+        _, tied = friedman(np.ones((6, 3)), True)
+        self.assertEqual(tied["p_value"], 1)
         self.assertEqual(tied["friedman_chi2"], 0)
-        _, ordered = friedman(np.tile([1, 2, 3], (6, 1)), True, 999, np.random.default_rng(0))
+        _, ordered = friedman(np.tile([1, 2, 3], (6, 1)), True)
         self.assertEqual(ordered["friedman_chi2"], 12)
-        self.assertEqual(ordered["p_iman_davenport"], 0)
-        self.assertLess(ordered["p_permutation"], .01)
-
-    def test_holm_and_paired_intervals(self):
-        np.testing.assert_allclose(holm([.03, .001, .04]), [.06, .003, .06])
-        values = np.array([.1, .2, .3, .4])
-        mean, sd, low, high = mean_ci(values, .05)
-        ref = stats.t.interval(.95, 3, loc=values.mean(), scale=stats.sem(values))
-        np.testing.assert_allclose([low, high], ref)
-        self.assertAlmostEqual(mean, .25)
-        self.assertGreater(sd, 0)
+        self.assertEqual(ordered["p_value"], 0)
+        self.assertEqual(ordered["iman_davenport_f"], np.inf)
 
     def test_dataset_blocks_directions_and_nemenyi(self):
         runs = fixture_runs()
-        tables = analyze(runs, [9, 55, 172], [str(d) for d in range(6)], list(range(1, 31)), permutations=1999)
+        tables = analyze(runs, [9, 55, 172], [str(d) for d in range(6)], list(range(1, 31)))
         self.assertTrue(tables["friedman"].datasets.eq(6).all())
         self.assertEqual(int(tables["ranking"].iloc[0].config_id), 172)
+        np.testing.assert_allclose(tables["ranking"].mean_rank, [1, 2, 3])
         for _, group in tables["metric_ranks"].groupby("metric"):
             self.assertEqual(group.sort_values("mean_rank").config_id.tolist(), [172, 55, 9])
         row = tables["nemenyi"].query("config_a == 9 and config_b == 172").iloc[0]
         expected_p = stats.studentized_range.sf(2 / np.sqrt(3*4/(12*6)), 3, np.inf)
         self.assertAlmostEqual(row.p_nemenyi, expected_p)
-        self.assertEqual(bool(row.significant), True)
-        paired = tables["paired_seed_intervals"]
-        self.assertTrue((paired.simultaneous_ci_low <= paired.ci_low).all())
-        self.assertTrue((paired.simultaneous_ci_high >= paired.ci_high).all())
-        # Duplicating seeds does not change the number of Friedman blocks or statistic.
+        self.assertTrue(row.significant)
+        # Table 5(a), Demšar: q(.05, K=3)=2.343, with no alpha/3 adjustment.
+        self.assertAlmostEqual(row.nemenyi_cd, 2.343 * np.sqrt(3*4/(6*6)), delta=.001)
+        self.assertEqual(len(tables["nemenyi_significant"]), 4)
+        self.assertEqual(len(tables["nemenyi_not_significant"]), 8)
+        self.assertTrue((tables["nemenyi"].p_nemenyi.lt(.05) == tables["nemenyi"].significant).all())
+        # Duplicating seeds does not increase the number of independent blocks.
         more = pd.concat([runs, runs.assign(seed=runs.seed + 30)])
-        other = analyze(more, [9, 55, 172], [str(d) for d in range(6)], list(range(1, 61)), permutations=999)
+        other = analyze(more, [9, 55, 172], [str(d) for d in range(6)], list(range(1, 61)))
         np.testing.assert_allclose(tables["friedman"].friedman_chi2, other["friedman"].friedman_chi2)
+        np.testing.assert_allclose(tables["nemenyi"].p_nemenyi, other["nemenyi"].p_nemenyi)
+
+    def test_average_repetitions_before_ranking(self):
+        rows = []
+        # Mean(A)=.6 > mean(B)=.5 although B wins in two of the three seeds.
+        for dataset, seed, cid in itertools.product(["a", "b", "c"], range(3), [1, 2, 3]):
+            value = {1: [.4, .4, 1], 2: [.5, .5, .5], 3: [.1, .1, .1]}[cid][seed]
+            rows.append(dict(config_id=cid, dataset=dataset, seed=seed, exceptionality=value,
+                             setCov=value, **{"model redundancy": 1-value, "#sg": 5}))
+        tables = analyze(pd.DataFrame(rows), [1, 2, 3], ["a", "b", "c"], [0, 1, 2])
+        self.assertEqual(tables["ranking"].config_id.tolist(), [1, 2, 3])
+        np.testing.assert_allclose(tables["ranking"].mean_rank, [1, 2, 3])
+
+    def test_demsar_published_critical_values(self):
+        # Table 5(a), plus the K=4, N=14 example's CD=1.25.
+        for k, published in [(3, 2.343), (4, 2.569), (10, 3.164)]:
+            q_alpha = stats.studentized_range.ppf(.95, k, np.inf) / np.sqrt(2)
+            self.assertAlmostEqual(q_alpha, published, delta=.001)
+        cd = stats.studentized_range.ppf(.95, 4, np.inf) * np.sqrt(4*5/(12*14))
+        self.assertAlmostEqual(cd, 1.25, delta=.005)
+
+    def test_composite_is_reranked_with_ties_in_both_modes(self):
+        # Metric ranks average to [2, 2, 3, 3], whose test ranks are [1.5, 1.5, 3.5, 3.5].
+        ids, datasets = [7, 2, 19, 4], [str(d) for d in range(6)]
+        for repetitions in (1, 2):
+            with self.subTest(repetitions=repetitions):
+                seeds = list(range(repetitions))
+                rows = []
+                for dataset, seed, i in itertools.product(datasets, seeds, range(4)):
+                    rows.append(dict(
+                        config_id=ids[i], dataset=dataset, seed=seed,
+                        exceptionality=[.9, .7, .5, .3][i], setCov=[.2, .6, .4, .8][i],
+                        **{"model redundancy": [.1, .3, .5, .7][i], "#sg": 5},
+                    ))
+                tables = analyze(pd.DataFrame(rows), ids, datasets, seeds)
+                cells = tables["ranks_per_dataset"].query("dataset == '0'").set_index("config_id").loc[ids]
+                np.testing.assert_allclose(cells.mean_metric_rank, [2, 2, 3, 3])
+                np.testing.assert_allclose(cells.rank_mean_metric_rank, [1.5, 1.5, 3.5, 3.5])
+                omnibus = tables["friedman"].set_index("metric").loc["mean_metric_rank"]
+                self.assertEqual(omnibus.datasets, 6)
+                self.assertAlmostEqual(omnibus.friedman_chi2, 18)
+                self.assertTrue(omnibus.reject_global)
+                pairs = tables["nemenyi"].query("metric == 'mean_metric_rank'")
+                pair = pairs.query("config_a == 7 and config_b == 19").iloc[0]
+                self.assertEqual(pair.rank_difference_a_minus_b, -2)
+                self.assertAlmostEqual(pair.p_nemenyi, stats.studentized_range.sf(2 / np.sqrt(20/72), 4, np.inf))
+                self.assertTrue(pair.significant)
+                self.assertEqual(pairs.query("config_a == 7 and config_b == 2").iloc[0].p_nemenyi, 1)
+
+    def test_omnibus_gates_posthoc(self):
+        runs = fixture_runs()
+        runs[["exceptionality", "model redundancy", "setCov"]] = .5
+        tables = analyze(runs, [9, 55, 172], [str(d) for d in range(6)], list(range(1, 31)))
+        self.assertFalse(tables["friedman"].reject_global.any())
+        self.assertTrue(tables["nemenyi"].p_nemenyi.isna().all())
+        self.assertTrue(tables["nemenyi"].decision.eq("not_tested").all())
+        self.assertFalse(tables["nemenyi"].significant.any())
+        self.assertTrue(tables["nemenyi_not_significant"].empty)
+
+    def test_invalid_panel_refused(self):
+        runs = fixture_runs()
+        args = ([9, 55, 172], [str(d) for d in range(6)], list(range(1, 31)))
+        for bad in [runs.iloc[1:], pd.concat([runs, runs.iloc[:1]]), runs.assign(setCov=np.nan)]:
+            with self.assertRaises(ValueError):
+                analyze(bad, *args)
 
     def test_report_and_plot_artifacts(self):
         runs = fixture_runs()
         plan = fixture_plan()
         plan.update(datasets=[dict(name=str(d)) for d in range(6)], seeds=list(range(1, 31)), repetitions=30)
-        tables = analyze(runs, plan["config_ids"], [str(d) for d in range(6)], plan["seeds"], permutations=999)
-        result = report(plan, tables, .05, 999, 2026)
+        tables = analyze(runs, plan["config_ids"], [str(d) for d in range(6)], plan["seeds"])
+        result = report(plan, tables, .05)
         self.assertIn("não demonstra equivalência", result)
         self.assertIn("pós-seleção", result)
+        self.assertIn("sem Holm ou Bonferroni adicional", result)
         with tempfile.TemporaryDirectory() as temp:
             plots(tables, Path(temp))
             self.assertTrue((Path(temp) / "mean_ranks.pdf").stat().st_size > 1000)
+
+
+class SingleModeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="mease single test ")
+        self.addCleanup(self.temp.cleanup)
+        self.source = Path(self.temp.name)
+        plan = fixture_plan()
+        config = plan["configs"]["9"]
+        (self.source / "configs.txt").write_text((repr(config) + "\n") * 12)
+        (self.source / "protocol.txt").write_text(
+            "protocol=mease-random-search-shell-v1\nnum_configs=12\n"
+            "executions=1\nrun_seed=37\nbaseline=complement\n"
+            + "".join(f"dataset={d}|unused|time|status\n" for d in ["a", "b", "c"])
+        )
+        for cid, dataset in itertools.product(range(12), ["a", "b", "c"]):
+            folder = self.source / f"config_{cid}" / dataset / "complement"
+            folder.mkdir(parents=True)
+            value = .2 + cid * .05
+            prefix = f"{dataset}_0_complement_"
+            pd.DataFrame([dict(exceptionality=value, setCov=value,
+                               **{"model redundancy": 1-value, "#sg": 5})]).to_csv(
+                folder / (prefix + "RulesMetricsResult.csv"), index=False)
+            pd.DataFrame([{**plan["fixed"], **config}]).to_csv(folder / (prefix + "Info.csv"), index=False)
+            (folder / (prefix + "DetailedRules.csv")).write_text("unused\n")
+            (folder / "command.sh").write_text("# fixture\n")
+            (folder / ".complete").write_text("".join(
+                f"{sha256(path)}  {path.name}\n" for path in sorted(folder.iterdir())
+            ))
+
+    def test_original_top_ten_and_one_observation_per_dataset(self):
+        plan, runs, hashes = load_single_panel(self.source)
+        self.assertEqual(plan["config_ids"], list(range(11, 1, -1)))
+        self.assertEqual(plan["seeds"], [37])
+        self.assertEqual(plan["repetitions"], 1)
+        self.assertEqual(len(runs), 30)
+        self.assertIn("protocol.txt", hashes)
+        self.assertIn("config_0/a/complement/.complete", hashes)
+        tables = analyze(runs, plan["config_ids"], ["a", "b", "c"], plan["seeds"])
+        self.assertTrue(tables["friedman"].repetitions.eq(1).all())
+        self.assertTrue(tables["friedman"].datasets.eq(3).all())
+        self.assertEqual(len(tables["nemenyi"]), 180)
+        # A single observation is used unchanged, rather than drawn from repeated runs.
+        self.assertAlmostEqual(tables["dataset_means"].query("config_id == 11").iloc[0].setCov, .75)
+
+    def test_missing_entire_dataset_refused(self):
+        for path in self.source.glob("config_*/c/complement/*RulesMetricsResult.csv"):
+            path.unlink()
+        with self.assertRaisesRegex(ValueError, "complete single-run"):
+            load_single_panel(self.source)
+
+    def test_extra_execution_refused(self):
+        folder = self.source / "config_0/a/complement"
+        for suffix in ["RulesMetricsResult", "Info"]:
+            (folder / f"a_1_complement_{suffix}.csv").write_bytes(
+                (folder / f"a_0_complement_{suffix}.csv").read_bytes())
+        with self.assertRaisesRegex(ValueError, "complete single-run"):
+            load_single_panel(self.source)
+
+    def test_modified_output_refused_even_outside_top_ten(self):
+        (self.source / "config_0/a/complement/command.sh").write_text("changed\n")
+        with self.assertRaisesRegex(ValueError, "completion checksums"):
+            load_single_panel(self.source)
+
+    def test_single_cli_without_repetition_plan(self):
+        command = [sys.executable, str(ROOT / "experiments/analyze_repeated_search.py"),
+                   "--mode", "single", "--input", str(self.source)]
+        lock_path = self.source / ".random_search.lock"
+        lock_path.mkdir()
+        result = subprocess.run(command, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Experiment locked", result.stderr)
+        lock_path.rmdir()
+        result = subprocess.run(command, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = self.source / "analysis"
+        protocol = json.loads((output / "analysis_protocol.json").read_text())
+        self.assertEqual(protocol["mode"], "single")
+        self.assertIsNone(protocol["plan_sha256"])
+        self.assertIn("Modo: `single`", (output / "relatorio.md").read_text())
+        self.assertTrue(pd.read_csv(output / "friedman.csv").repetitions.eq(1).all())
+        self.assertFalse(lock_path.exists())
 
 
 class ExecutionTests(unittest.TestCase):
@@ -149,12 +290,14 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 19)
         self.assertEqual(len(load_panel(self.output)[1]), 18)
         result = subprocess.run([sys.executable, str(ROOT / "experiments/analyze_repeated_search.py"),
-                                 "--input", str(self.output), "--permutations", "999"],
+                                 "--input", str(self.output)],
                                 text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.output / "analysis/relatorio.md").exists())
+        protocol = json.loads((self.output / "analysis/analysis_protocol.json").read_text())
+        self.assertEqual(protocol["mode"], "repeated")
         tests = pd.read_csv(self.output / "analysis/friedman.csv")
-        self.assertTrue(tests.p_permutation.eq(1).all())
+        self.assertTrue(tests.p_value.eq(1).all())
         self.assertFalse(tests.reject_global.any())
 
     def test_failure_never_marks_complete(self):
@@ -163,12 +306,7 @@ class ExecutionTests(unittest.TestCase):
                 run_plan(self.plan, self.output)
         self.assertEqual(len(list(self.output.rglob(".complete.json"))), 0)
 
-    def test_code_drift_and_duplicate_jobs_refused(self):
-        self.plan["hashes"] = {"main.py": "wrong"}
-        write_json(self.output / "plan.json", self.plan)
-        with self.assertRaisesRegex(ValueError, "fingerprint differs"):
-            load_panel(self.output)
-        self.plan["hashes"] = {}
+    def test_duplicate_jobs_refused(self):
         self.plan["jobs"][1] = self.plan["jobs"][0]
         write_json(self.output / "plan.json", self.plan)
         with self.assertRaisesRegex(ValueError, "balanced panel"):

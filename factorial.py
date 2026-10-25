@@ -1,19 +1,23 @@
+import os
 import argparse
 from pathlib import Path
 import pandas as pd
 from easd.runner import RunConfig, run_dataset
 
-FACTORIAL_RUNTIME_CSV = "experiments/factorial_design/designs/factorial_runtime.csv"
-FACTORIAL_SCORE_CSV = "experiments/factorial_design/designs/factorial_score.csv"
-FACTORIAL_TOPK_QUALITY_CSV = "experiments/factorial_design/designs/factorial_topk_quality.csv"
-FACTORIAL_TOPK_QUALITY_CONTROL_CSV = "experiments/factorial_design/designs/factorial_topk_quality_controls.csv"
-FACTORIAL_TOPK_QUALITY_MEAN_CSV = "experiments/factorial_design/designs/factorial_topk_mean_score.csv"
 FACTORIAL_PROJECTS_LIST = [
-    FACTORIAL_RUNTIME_CSV,
-    # FACTORIAL_SCORE_CSV,
-    # FACTORIAL_TOPK_QUALITY_CSV,
-    # FACTORIAL_TOPK_QUALITY_CONTROL_CSV,
-    # FACTORIAL_TOPK_QUALITY_MEAN_CSV,
+    "experiments/factorial_design/designs/factorial_population.csv",
+    "experiments/factorial_design/designs/factorial_generations.csv",
+    "experiments/factorial_design/designs/factorial_restart_gen.csv",
+    "experiments/factorial_design/designs/factorial_restart_pop.csv",
+    "experiments/factorial_design/designs/factorial_restart_pct.csv",
+    "experiments/factorial_design/designs/factorial_alpha.csv",
+    "experiments/factorial_design/designs/factorial_ksize.csv",
+    "experiments/factorial_design/designs/factorial_threshold.csv",
+    "experiments/factorial_design/designs/factorial_score_metric.csv",
+    "experiments/factorial_design/designs/factorial_redundancy_penalty.csv",
+    "experiments/factorial_design/designs/factorial_redundancy_similarity_threshold.csv",
+    "experiments/factorial_design/designs/factorial_min_relative_supp.csv",
+    "experiments/factorial_design/designs/factorial_max_relative_supp.csv",
 ]
 EXPERIMENT_NAME_COLUMN = "experiment"
 RESPONSE_VAR_COLUMN = "response"
@@ -25,40 +29,47 @@ RATE_POLICY_COLUMN = "rate_policy"
 KSIZE_COLUMN = "ksize"
 OUTPUT_DIR = "./experiments/factorial_design/factorial_2k"
 OPTIONAL_CONFIG_COLUMNS = {
-    "alpha",
-    "comparacao",
-    "debug_performance",
-    "executions",
-    "ksize",
-    "plot_rank",
+    "generations",
+    "population",
     "restart_gen",
     "restart_pop",
     "restart_pct",
-    "seed",
+    "comparacao",
+    "alpha",
+    "ksize",
+    "plot_rank",
     "threshold",
+    "debug_performance",
+    "rate_policy",
+    "score_metric",
+    "km_time_bins",
+    "redundancy_penalty",
+    "redundancy_similarity_threshold",
+    "archive_selection",
+    "min_relative_supp",
+    "max_relative_supp",
 }
-
-arguments_dict = {
-    "config": None,
-    "filepath": None,
-    "time_col": None,
-    "event_col": None,
-    "output_dir": OUTPUT_DIR,
-    "dataset_name": "",
-    "seed": None,
-    "executions": 15,
-    "generations": None,
-    "population": None,
-    "restart_gen": 5,
-    "restart_pop": 5,
-    "restart_pct": 10,
+DEFAULT_CONFIG = {
+    "executions": 30,
+    "generations": 500,
+    "population": 800,
+    "restart_gen": 3,
+    "restart_pop": 3,
+    "restart_pct": 0.60,
     "comparacao": "complement",
-    "alpha": 0.10,
-    "ksize": 10,
+    "alpha": 0.30,
+    "ksize": 5,
     "plot_rank": 10,
-    "threshold": 0.90,
-    "debug_performance": "off",
-    "rate_policy": None,
+    "threshold": 0.30,
+    "debug_performance": False,
+    "rate_policy": "adaptive",
+    "score_metric": "fast_logrank",
+    "km_time_bins": 512,
+    "redundancy_penalty": 0.50,
+    "redundancy_similarity_threshold": 0.50,
+    "archive_selection": "greedy",
+    "min_relative_supp": 0.05,
+    "max_relative_supp": 0.45,
 }
 
 
@@ -80,7 +91,6 @@ def config_from_args(p_args: dict) -> RunConfig:
         event_col=p_args["event_col"],
         output_dir=Path(p_args["output_dir"]),
         dataset_name=p_args["dataset_name"],
-        seed=p_args["seed"],
         executions=p_args["executions"],
         generations=p_args["generations"],
         population=p_args["population"],
@@ -92,8 +102,15 @@ def config_from_args(p_args: dict) -> RunConfig:
         ksize=p_args["ksize"],
         plot_rank=p_args["plot_rank"],
         threshold=p_args["threshold"],
-        debug_performance=as_bool(p_args["debug_performance"]),
+        debug_performance=False,
         rate_policy=p_args["rate_policy"],
+        score_metric=p_args["score_metric"],
+        km_time_bins=p_args["km_time_bins"],
+        redundancy_penalty=p_args["redundancy_penalty"],
+        redundancy_similarity_threshold=p_args["redundancy_similarity_threshold"],
+        archive_selection=p_args["archive_selection"],
+        min_relative_supp=p_args["min_relative_supp"],
+        max_relative_supp=p_args["max_relative_supp"],
     )
 
 
@@ -104,7 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--designs", nargs="+", type=Path, default=[Path(path) for path in FACTORIAL_PROJECTS_LIST])
     parser.add_argument("--output_dir", default=OUTPUT_DIR)
-    parser.add_argument("--executions", type=int, default=arguments_dict["executions"])
+    parser.add_argument("--executions", type=int, default=DEFAULT_CONFIG["executions"])
     return parser
 
 
@@ -114,28 +131,30 @@ def row_value(experiment: pd.Series, column: str, default):
     return experiment[column]
 
 
-def run_factorial_designs(designs: list[Path], output_dir: str, executions: int) -> None:
+def run_factorial_designs(designs: list[Path], output_dir: str) -> None:
     for project in designs:
         exp_df = pd.read_csv(project)
         response_var = exp_df.loc[0, RESPONSE_VAR_COLUMN]
+        experiment_name = exp_df.loc[0, EXPERIMENT_NAME_COLUMN]
 
         for _, experiment in exp_df.iterrows():
-            run_arguments = dict(arguments_dict)
+            run_arguments = dict(DEFAULT_CONFIG)
             dataset_name, file_path, time_column, event_column, label_column = str(experiment[DATASET_COLUMN]).split(
                 "|"
             )
+
+            if os.path.exists(
+                f"{output_dir}/{experiment_name}/{response_var}/{experiment[FACTOR_COLUMN]}/{dataset_name}/complement/{dataset_name}_complement_RulesMetricsResult.csv"
+            ):
+                continue
+
             run_arguments["config"] = experiment[FACTOR_COLUMN]
             run_arguments["filepath"] = file_path
             run_arguments["time_col"] = time_column
             run_arguments["event_col"] = event_column
             run_arguments["label_col"] = label_column
             run_arguments["dataset_name"] = dataset_name
-            run_arguments["output_dir"] = f"{output_dir}/{response_var}/{experiment[FACTOR_COLUMN]}"
-            run_arguments["executions"] = executions
-
-            run_arguments[POPULATION_SIZE_COLUMN] = experiment[POPULATION_SIZE_COLUMN]
-            run_arguments[GENERATIONS_COLUMN] = experiment[GENERATIONS_COLUMN]
-            run_arguments[RATE_POLICY_COLUMN] = experiment[RATE_POLICY_COLUMN]
+            run_arguments["output_dir"] = f"{output_dir}/{experiment_name}/{response_var}/{experiment[FACTOR_COLUMN]}"
 
             for column in OPTIONAL_CONFIG_COLUMNS:
                 run_arguments[column] = row_value(experiment, column, run_arguments[column])
@@ -146,4 +165,4 @@ def run_factorial_designs(designs: list[Path], output_dir: str, executions: int)
 
 if __name__ == "__main__":
     args = build_parser().parse_args()
-    run_factorial_designs(args.designs, args.output_dir, args.executions)
+    run_factorial_designs(args.designs, args.output_dir)

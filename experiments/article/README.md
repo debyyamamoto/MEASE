@@ -90,6 +90,36 @@ bash experiments/article/repeat_random_search.sh
 bash experiments/article/analyze_repeated_search.sh
 ```
 
+The optional `--mode {repeated,single}` chooses the analysis inputs:
+
+- `repeated` (default): uses the frozen selection in `plan.json` and averages
+  the fresh repetitions. Default input: `experiments/repeated_random_search`.
+- `single`: selects the best 10 configurations from the original Random Search
+  with the same equal-weight mean-rank policy, then runs Friedman/Nemenyi on
+  their original `RulesMetricsResult.csv` values (one execution per dataset).
+  If the search has fewer than 10 configurations, all are used (minimum 3).
+  Default input: `experiments/random_search_shell`. No repetition plan or
+  completed repetitions are needed. CSV rounding is preserved.
+
+```bash
+bash experiments/article/analyze_repeated_search.sh --mode repeated
+bash experiments/article/analyze_repeated_search.sh --mode single
+
+# --input always points to the source directory for the chosen mode.
+bash experiments/article/analyze_repeated_search.sh --mode single \
+  --input experiments/random_search_shell --output-dir experiments/analysis_single
+```
+
+Both modes produce the same statistical tables and record their mode in the
+report and `analysis_protocol.json`. By default each writes to `analysis/`
+inside its own input directory, so the two default reports are separate.
+The default top-10 selection matches between modes for the same original
+search; a custom repeated selection (`--config-ids` or `--top-k`) is specific
+to that repetition plan. Single mode always selects the original top 10.
+Single mode validates the complete original search panel, metadata and saved
+output checksums before selection; it does not compare saved code hashes to
+the currently installed code. Neither mode launches new MEASE executions.
+
 The shell entrypoints use Python helpers for manifest auditing, execution and
 statistics, with the project's locked dependencies. No additional package is
 required. Relative paths resolve from the repository root, including when the
@@ -143,8 +173,7 @@ bash experiments/article/repeat_random_search.sh --max-runs 1
 bash experiments/article/repeat_random_search.sh
 
 bash experiments/article/analyze_repeated_search.sh \
-  --input experiments/repeated_candidates --confidence 0.95 \
-  --permutations 99999 --analysis-seed 2026
+  --input experiments/repeated_candidates --confidence 0.95
 ```
 
 Repeat the same experiment options to resume. Valid completed runs are skipped;
@@ -164,44 +193,73 @@ Use a new `--output-dir` for analysis sensitivity runs to retain previous report
 Following [Demšar (2006)](https://jmlr.org/papers/v7/demsar06a.html), the independent
 blocks are **datasets**, not individual algorithm repetitions. The 30 seeds
 estimate one mean per configuration/dataset; Friedman receives an N × K matrix
-for each of the three metrics. With the default panel, **N=6, K=10**, not N=180.
+for each of the three metrics and their combined `mean_metric_rank` score.
+With the default panel, **N=6, K=10**, not N=180.
 More repetitions improve the estimates on these bases but do not replace more
 independent datasets. Independence/representativeness of the six bases must be
 assessed separately, particularly if bases might share records or origins.
 
-The primary omnibus result is a tie-corrected Friedman statistic calibrated by
-99,999 within-dataset label permutations (plus-one p-value, fixed analysis seed).
-This additional choice avoids relying exclusively on the small-sample chi-square
-approximation; it assumes exchangeability under the null. Asymptotic Friedman
-and Iman–Davenport values are also reported. Holm adjusts the three omnibus
-p-values. Monte Carlo standard errors are exported; a decision close to the
-threshold needs more permutations.
+The descriptive `mean_rank` averages the ranks of exceptionality (higher is
+better), setCov (higher is better), and model redundancy (lower is better), with
+equal weights across metrics and datasets. Ranks are assigned among the frozen
+candidates after averaging repetitions, with average ranks for ties.
 
-Nemenyi compares all configuration pairs using average ranks. It accounts for
-all pairs within a metric, with an additional Bonferroni adjustment across the
-three metrics. Differences of ranks have simultaneous intervals defined by the
-critical difference. A pair is declared significant only after its omnibus test
-passes Holm and its Nemenyi interval excludes zero. Nemenyi remains approximate
-and can be conservative with ties; the global permutation calibration does not
-make the post-hoc test exact. Six datasets and ten similar candidates may provide
-little power. Non-significance does **not** establish equivalence.
+Both modes also test the combined score `mean_metric_rank`: within each dataset,
+average the three metric ranks with equal weights, then rank these scores again
+across configurations (lower is better, average ranks for ties). Friedman and
+Nemenyi use these new ranks, with datasets still as blocks. The three metrics
+are not treated as additional blocks. This tests the chosen composite score;
+it does not imply that every individual metric differs significantly.
+`ranks_per_dataset.csv` exposes both `mean_metric_rank` and its test rank,
+`rank_mean_metric_rank`. The `mean_metric_rank` entries in `metric_ranks.csv`
+average the latter, and can differ from the descriptive `mean_rank` in
+`ranking.csv`, which averages the composite scores themselves.
 
-The report also separates two kinds of uncertainty:
+Each metric has a separate tie-corrected Friedman test. Following §3.2.2, its
+**Iman–Davenport F approximation** determines rejection at alpha=0.05 by default:
+`F = (N−1) chi2 / [N(K−1)−chi2]`, with K−1 and (K−1)(N−1) degrees of freedom.
+`friedman.csv` stores this p-value as `p_value`; `p_chi2` is informational only.
+The F approximation is not a multiplicity adjustment. Complete within-dataset
+ties return statistic=0 and p=1; perfect ordering returns F=infinity and p=0.
 
-- Pointwise t confidence intervals for each configuration/dataset mean over
-  seeds, with SD and zero-variance flags.
-- Paired t intervals for raw A−B differences: compute the macro mean across the
-  fixed datasets for each seed, then compare the paired seeds. Both pointwise
-  and Bonferroni simultaneous intervals over all pairs × metrics are exported.
-  These describe algorithm randomness on this fixed panel, not generalization
-  to new datasets, and do not replace Friedman/Nemenyi.
+After an omnibus rejection, Nemenyi compares all K(K−1)/2 configuration pairs
+within that metric at the same alpha, **without additional Holm or Bonferroni**.
+Pairwise p-values come from scikit-posthocs' `posthoc_nemenyi_friedman`, using
+the same rank matrix as Friedman (rows=datasets, columns=configurations).
+A pair is significant when `p_nemenyi < alpha`. The package version is recorded
+in `analysis_protocol.json`.
+The critical difference is `CD = q_alpha sqrt(K(K+1)/(6N))`, where `q_alpha` is
+the studentized-range quantile divided by sqrt(2), as in Table 5(a). It is retained
+for tables/plots; exceeding CD is equivalent to the p-value decision. Multiplicity is
+controlled within each outcome's pairs, not jointly across the three metrics
+and the composite score.
+Nemenyi and the omnibus F calibration remain approximations; six datasets and
+ten similar candidates may provide little power.
 
-The t intervals require a suitable approximation for the mean and independent
-repetitions; r=30 does not guarantee normality. Bounds are not clipped. Zero
-observed variance yields a degenerate interval, not proof of zero uncertainty.
-Use intervals of **differences**, not overlap of two separate mean intervals, to
-evaluate a contrast. The multiplicity families for dataset inference and for
-conditional seed intervals are separate and explicitly labeled.
+Outputs:
+
+- `ranking.csv`: the three average metric ranks and their combined `mean_rank`.
+- `runs.csv`, `dataset_means.csv`, `ranks_per_dataset.csv`, `metric_ranks.csv`:
+  observations and intermediate calculations.
+- `friedman.csv`: four omnibus results (three metrics plus `mean_metric_rank`).
+- `nemenyi.csv`: all 45 pairs per outcome for the default top 10 (180 rows), with p-values,
+  critical difference and `decision` (`significant`, `not_significant`, or
+  `not_tested` when Friedman does not reject; in that case the post-hoc p is empty).
+- `nemenyi_significant.csv`, `nemenyi_not_significant.csv`: the tested pairs split
+  by decision. Non-significance does **not** establish equivalence.
+- `relatorio.md`, `mean_ranks.png/pdf`, `analysis_protocol.json`: interpretation,
+  descriptive plots, and method/input provenance.
+
+Migration from the former analysis: `--permutations` and `--analysis-seed` were
+removed. Monte Carlo tests, additional multiplicity adjustments and seed t
+intervals are no longer computed. The old `cell_intervals.csv` and
+`paired_seed_intervals.csv` are not outputs of this protocol. To retain an old
+analysis without mixing artifacts, use a new directory, for example:
+
+```bash
+bash experiments/article/analyze_repeated_search.sh \
+  --output-dir experiments/repeated_random_search/analysis_friedman_nemenyi
+```
 
 Fresh seeds address the original single-run limitation, but selecting candidates
 and evaluating them on the same datasets still incurs selection bias. This is a

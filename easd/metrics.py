@@ -9,6 +9,7 @@ import statsmodels.api as sm
 from sklearn.metrics import f1_score
 from autorank import autorank
 from .dataset import Dataset
+from .survival_curves import KaplanMeierGrid, weighted_rms_distance
 from rich.console import Console
 
 console = Console()
@@ -31,6 +32,8 @@ class RunMetrics:
     coverage_redundancy: float
     cr: float
     model_redundancy: float
+    mean_pairwise_rms: float = float("nan")
+    rms_valid_pairs: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -43,6 +46,8 @@ class RunMetrics:
             "coverage redundancy": float(self.coverage_redundancy),
             "CR": float(self.cr),
             "model redundancy": float(self.model_redundancy),
+            "mean_pairwise_rms": float(self.mean_pairwise_rms),
+            "rms_valid_pairs": int(self.rms_valid_pairs),
         }
 
 
@@ -60,6 +65,7 @@ def compute_run_metrics(
     alpha: float = 0.05,
     dataset_obj: Optional[Dataset] = None,
     baseline: str = "population",
+    km_time_bins: int | None = 512,
 ) -> RunMetrics:
     """
     Computes the paper metrics for one run.
@@ -74,6 +80,13 @@ def compute_run_metrics(
     - model redundancy: pairwise mean sim_M, where sim_M = 1 if p(A vs B) > alpha
       (to avoid overlap artifacts, compare A/B vs B/A)
     - CR: per-instance redundancy, mean normalized excess coverage
+    - mean_pairwise_rms: mean weighted RMS distance between complete subgroup
+      survival curves (higher means more separation, not significance).
+    - rms_valid_pairs: number of comparable pairs used in that mean. Undefined
+      pairs are omitted; no valid pairs produces NaN, never maximal distance.
+
+    km_time_bins uses the evaluator's grid convention; 0/None selects all event
+    times. Events must be binary (0=censored, 1=observed), as in Dataset.get_data().
 
     dataset_obj is required when rules use integer attribute indices.
     """
@@ -129,6 +142,15 @@ def compute_run_metrics(
     union_cov = set().union(*cover_sets) if cover_sets else set()
     setCov = float(len(union_cov) / num_samples) if num_samples else 0.0
 
+    rms_values = []
+    if n_sg >= 2:
+        grid = KaplanMeierGrid(df[time_col].to_numpy(), df[event_col].to_numpy(), km_time_bins)
+        curves = [grid.curve(df.index.isin(cov)) for cov in cover_sets]
+        for i, j in itertools.combinations(range(n_sg), 2):
+            distance = weighted_rms_distance(curves[i], curves[j], grid.widths, grid.weights)
+            if np.isfinite(distance):
+                rms_values.append(distance)
+
     # Pairwise redundancies.
     if n_sg < 2:
         desc_red = 0.0
@@ -175,6 +197,8 @@ def compute_run_metrics(
         coverage_redundancy=float(covarage_redundancy),
         cr=float(cover_redundancy),
         model_redundancy=float(model_red),
+        mean_pairwise_rms=float(np.mean(rms_values)) if rms_values else float("nan"),
+        rms_valid_pairs=len(rms_values),
     )
 
 
