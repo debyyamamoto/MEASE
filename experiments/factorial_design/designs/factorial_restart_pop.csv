@@ -1,0 +1,5 @@
+experiment,factor,restart_pop,dataset,response
+restart_pop,restart_pop_1,1,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+restart_pop,restart_pop_3,3,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+restart_pop,restart_pop_5,5,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+restart_pop,restart_pop_10,10,mgus2|datasets/files/mgus2.parquet|futime|status|,all

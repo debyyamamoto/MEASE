@@ -1,0 +1,6 @@
+experiment,factor,population,dataset,response
+population,pop_10,10,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+population,pop_50,50,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+population,pop_250,250,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+population,pop_800,800,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+population,pop_1250,1250,mgus2|datasets/files/mgus2.parquet|futime|status|,all

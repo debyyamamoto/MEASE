@@ -1,0 +1,6 @@
+experiment,factor,alpha,dataset,response
+alpha,alpha_10,0.1,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+alpha,alpha_30,0.3,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+alpha,alpha_50,0.5,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+alpha,alpha_70,0.7,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+alpha,alpha_90,0.9,mgus2|datasets/files/mgus2.parquet|futime|status|,all

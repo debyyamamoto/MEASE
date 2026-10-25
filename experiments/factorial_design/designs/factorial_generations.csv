@@ -1,0 +1,6 @@
+experiment,factor,generations,dataset,response
+generations,gen_10,10,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+generations,gen_50,50,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+generations,gen_250,250,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+generations,gen_800,800,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+generations,gen_1250,1250,mgus2|datasets/files/mgus2.parquet|futime|status|,all

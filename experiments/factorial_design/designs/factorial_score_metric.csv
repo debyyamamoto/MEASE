@@ -1,0 +1,5 @@
+experiment,factor,score_metric,dataset,response
+score_metric,score_metric_fast_logrank,fast_logrank,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+score_metric,score_metric_mdir2,mdir2,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+score_metric,score_metric_km_abc,km_abc,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+score_metric,score_metric_km_cvm,km_cvm,mgus2|datasets/files/mgus2.parquet|futime|status|,all
