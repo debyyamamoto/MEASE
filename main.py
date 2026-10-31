@@ -24,12 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output_dir", type=Path, default=Path("results"), help="Directory for generated outputs.")
     parser.add_argument("--dataset_name", default=None, help="Optional name used in output files.")
     parser.add_argument("--seed", type=int, default=None, help="Seed for reproducibility.")
-    parser.add_argument("-th", "--threshold", type=float, default=0.30, help="Jaccard similarity threshold.")
-    parser.add_argument("-g", "--generations", type=int, default=500, help="Maximum number of generations.")
-    parser.add_argument("-p", "--population", type=int, default=800, help="Population size.")
+    parser.add_argument("-th", "--threshold", type=float, default=0.70, help="Jaccard similarity threshold.")
+    parser.add_argument("-g", "--generations", type=int, default=100, help="Maximum number of generations.")
+    parser.add_argument("-p", "--population", type=int, default=500, help="Population size.")
     parser.add_argument("--restart_gen", type=int, default=3, help="Generation limit without improvement.")
-    parser.add_argument("--restart_pop", type=int, default=3, help="Population restart limit.")
-    parser.add_argument("--restart_pct", type=float, default=0.60, help="Population percentage restarted each time.")
+    parser.add_argument("--restart_pop", type=int, default=10, help="Population restart limit.")
+    parser.add_argument("--restart_pct", type=float, default=0.30, help="Population percentage restarted each time.")
     parser.add_argument(
         "-comp",
         "--comparacao",
@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="complement",
         help="Baseline group for the log-rank test.",
     )
-    parser.add_argument("-a", "--alpha", type=float, default=0.30, help="Fitness alpha weight.")
+    parser.add_argument("-a", "--alpha", type=float, default=0.10, help="Fitness alpha weight.")
     parser.add_argument(
         "--score_metric",
         choices=SCORE_METRICS,
@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--redundancy_similarity_threshold",
         type=float,
-        default=0.50,
+        default=0.30,
         help="Penalize candidates whose Kaplan-Meier curve similarity exceeds this value.",
     )
     parser.add_argument(
@@ -83,10 +83,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--min_rule_support", type=float, default=0.05, help="Min relative support for a rule to accepted in top-k"
     )
     parser.add_argument(
-        "--max_rule_support", type=float, default=0.45, help="Max relative support for a rule to accepted in top-k"
+        "--max_rule_support", type=float, default=0.55, help="Max relative support for a rule to accepted in top-k"
     )
     parser.add_argument("-exe", "--executions", type=int, default=1, help="Independent algorithm executions.")
-    parser.add_argument("-k", "--ksize", type=int, default=5, help="Top-K rule rank size.")
+    parser.add_argument("-k", "--ksize", type=int, default=7, help="Top-K rule rank size.")
     parser.add_argument(
         "-plt",
         "--plt_rank",

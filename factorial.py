@@ -51,25 +51,25 @@ OPTIONAL_CONFIG_COLUMNS = {
 }
 DEFAULT_CONFIG = {
     "executions": 30,
-    "generations": 500,
-    "population": 800,
-    "restart_gen": 3,
-    "restart_pop": 3,
-    "restart_pct": 0.60,
+    "generations": 100,
+    "population": 500,
+    "restart_gen": 5,
+    "restart_pop": 10,
+    "restart_pct": 0.30,
     "comparacao": "complement",
-    "alpha": 0.30,
-    "ksize": 5,
+    "alpha": 0.10,
+    "ksize": 7,
     "plot_rank": 10,
-    "threshold": 0.30,
+    "threshold": 0.70,
     "debug_performance": False,
     "rate_policy": "adaptive",
     "score_metric": "fast_logrank",
     "km_time_bins": 512,
     "redundancy_penalty": 0.50,
-    "redundancy_similarity_threshold": 0.50,
+    "redundancy_similarity_threshold": 0.30,
     "archive_selection": "greedy",
     "min_relative_supp": 0.05,
-    "max_relative_supp": 0.45,
+    "max_relative_supp": 0.55,
 }
 
 
@@ -144,7 +144,7 @@ def run_factorial_designs(designs: list[Path], output_dir: str) -> None:
             )
 
             if os.path.exists(
-                f"{output_dir}/{experiment_name}/{response_var}/{experiment[FACTOR_COLUMN]}/{dataset_name}/complement/{dataset_name}_complement_RulesMetricsResult.csv"
+                f"{output_dir}/{experiment_name}/{response_var}/{experiment[FACTOR_COLUMN]}/{dataset_name}/complement/{dataset_name}_{DEFAULT_CONFIG["executions"]-1}_complement_RulesMetricsResult.csv"
             ):
                 continue
 
