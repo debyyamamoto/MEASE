@@ -233,36 +233,7 @@ def output_metrics(p_metrics_list: list, p_file_name: str):
         console.log(f"Metrics (1 run) -> {p_file_name}", style="green")
         return
 
-    # Case 2: multiple runs, try autorank.
-    output_df = None
-
-    try:
-        results = autorank(metrics_df, alpha=ALPHA, verbose=False, order=STAT_ORDER)
-
-        if results is not None and hasattr(results, "rankdf"):
-            ranked_df = results.rankdf
-
-            # Check expected columns.
-            required_cols = ["mean", "std"]
-            if all(col in ranked_df.columns for col in required_cols):
-                # Format as mean+/-std.
-                output_df = pd.DataFrame()
-                output_df["mean+/-std"] = (
-                    ranked_df["mean"].round(4).astype(str) + "+/-" + ranked_df["std"].round(4).astype(str)
-                )
-
-                # Add meanrank when available.
-                if "meanrank" in ranked_df.columns:
-                    output_df["meanrank"] = ranked_df["meanrank"].round(2)
-
-                output_df.to_csv(p_file_name)
-                console.log(f"Metrics (autorank) -> {p_file_name}", style="green")
-                return
-
-    except Exception as e:
-        console.log(f"Autorank failed: {str(e)[:50]}...", style="yellow")
-
-    # Case 3: fallback to basic statistics.
+    # Case 2: fallback to basic statistics.
     output_df = _compute_basic_statistics(metrics_df)
     output_df.to_csv(p_file_name, float_format="%.4f")
     console.log(f"Metrics (basic statistics) -> {p_file_name}", style="green")

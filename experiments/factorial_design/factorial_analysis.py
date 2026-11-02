@@ -4,6 +4,7 @@ import argparse
 from itertools import combinations
 import math
 import re
+from glob import glob
 from pathlib import Path
 
 import matplotlib
@@ -23,6 +24,7 @@ DEFAULT_DESIGNS = [
 DEFAULT_RESULTS_DIR = EXPERIMENTS_DIR / "factorial_2k"
 DEFAULT_OUTPUT_DIR = EXPERIMENTS_DIR / "factorial_analysis"
 DEFAULT_BASELINE = "complement"
+ALL_METRICS = "all"
 EXCLUDED_DESIGN_COLUMNS = {"experiment", "factor", "response", "dataset", "results_subdir"}
 INFO_FILE = "Info"
 METRICS_FILE = "RulesMetricsResult"
@@ -450,9 +452,13 @@ def build_effects_df(
         ci_margin = t_critical * s_qi if math.isfinite(t_critical) and math.isfinite(s_qi) else math.nan
         ci_low = q_i - ci_margin if math.isfinite(ci_margin) else math.nan
         ci_high = q_i + ci_margin if math.isfinite(ci_margin) else math.nan
-        ci_contains_zero = bool(ci_low <= 0 <= ci_high) if math.isfinite(ci_low) and math.isfinite(ci_high) else math.nan
+        ci_contains_zero = (
+            bool(ci_low <= 0 <= ci_high) if math.isfinite(ci_low) and math.isfinite(ci_high) else math.nan
+        )
         relevant_by_ci = not ci_contains_zero if isinstance(ci_contains_zero, bool) else math.nan
-        decision_by_ci = "relevant" if relevant_by_ci is True else "not_relevant" if relevant_by_ci is False else "undefined"
+        decision_by_ci = (
+            "relevant" if relevant_by_ci is True else "not_relevant" if relevant_by_ci is False else "undefined"
+        )
 
         rows.append(
             {
@@ -989,50 +995,142 @@ def analyze_design(
     response = str(design_df.loc[0, "response"])
     response_transform = select_response_transform(response, response_transforms)
     factors = factor_columns(design_df)
-    responses_df = collect_response_rows(design_df, results_dir, baseline, response_transform)
-    if responses_df.empty:
-        print(f"No rows collected for {design_file}. Skipping.")
-        return
+    if len(factors) == 1:
+        response = str(design_df.loc[0, "response"])
+        if response == ALL_METRICS:
+            levels_table = {}
+            levels_table: dict[str, dict[str, dict]]
+            repetitions = 0
+            for _, treatment in design_df.iterrows():
+                dataset_name, _, _, _ = parse_dataset_spec(treatment["dataset"])
+                config = str(treatment["factor"])
+                experiment = treatment["experiment"]
+                treatment_dir = Path(results_dir / experiment / response / config / dataset_name / baseline)
 
-    experiment = str(design_df.loc[0, "experiment"])
-    output_dir.mkdir(parents=True, exist_ok=True)
+                levels_table[config] = {}
 
-    factorial_df = build_factorial_df(responses_df, design_df, factors)
-    factorial_display_df = build_factorial_display_df(factorial_df, factors)
-    effects_df = build_effects_df(factorial_df, factors, alpha)
-    coefficients_df = build_coefficients_df(factorial_df, effects_df)
-    confidence_intervals_df = build_confidence_intervals_df(effects_df, factorial_df, alpha)
-    ss_steps_df = build_ss_steps_df(factorial_df, effects_df)
-    variance_df = build_variance_explained_df(effects_df, factorial_df)
-    residuals_df = build_residuals_df(responses_df, coefficients_df, factors)
-    assumptions_df = build_assumption_checks_df(residuals_df, factorial_df, effects_df, factors, alpha)
-    response_label = f"{response}{transform_output_suffix(response_transform, response_transforms is not None)}"
-    diagnostics_dir = output_dir / f"{experiment}_{response_label}_diagnostics"
+                stats_metrics_df = pd.read_csv(treatment_dir / f"{dataset_name}_{baseline}_RulesMetricsResult.csv")
+                if "metric" not in stats_metrics_df.columns:
+                    print("\n")
+                    print(treatment_dir / f"{dataset_name}_{baseline}_RulesMetricsResult.csv")
+                    continue
+                for metric in stats_metrics_df["metric"][:-3]:
+                    metrics_files = glob(f"{treatment_dir}/*RulesMetricsResult.csv")
+                    metrics_files.remove(f"{treatment_dir}/{dataset_name}_{baseline}_RulesMetricsResult.csv")
+                    repetitions = len(metrics_files)
 
-    prefix = output_dir / f"{experiment}_{response_label}"
-    responses_df.to_csv(f"{prefix}_raw_responses.csv", index=False)
-    factorial_df.to_csv(f"{prefix}_treatments.csv", index=False)
-    factorial_display_df.to_csv(f"{prefix}_factorial_df.csv", index=False)
-    coefficients_df.to_csv(f"{prefix}_coefficients.csv", index=False)
-    effects_df.to_csv(f"{prefix}_effects.csv", index=False)
-    confidence_intervals_df.to_csv(f"{prefix}_confidence_intervals.csv", index=False)
-    ss_steps_df.to_csv(f"{prefix}_ss_steps.csv", index=False)
-    variance_df.to_csv(f"{prefix}_variance_explained.csv", index=False)
-    residuals_df.to_csv(f"{prefix}_residuals.csv", index=False)
-    assumptions_df.to_csv(f"{prefix}_assumption_checks.csv", index=False)
-    save_diagnostic_plots(residuals_df, diagnostics_dir)
+                    y_mean = stats_metrics_df[stats_metrics_df["metric"] == metric]["mean"].values[0]
+                    y_ij_list = []
+                    errors_list = []
+                    for file in metrics_files:
+                        metrics_value = pd.read_csv(file)[metric].values[0]
+                        y_ij_list.append(metrics_value)
+                        errors_list.append(metrics_value - y_mean)
 
-    print(f"\n=== {experiment}: {response} ===")
-    print(f"Response transform: {response_transform}")
-    print(f"Factors: {', '.join(factors)}")
-    print(f"Rows: {len(responses_df)} responses, {len(factorial_df)} treatments")
-    print(f"Saved classroom factorial table: {prefix}_factorial_df.csv")
-    print(f"Saved coefficients: {prefix}_coefficients.csv")
-    print(f"Saved confidence intervals: {prefix}_confidence_intervals.csv")
-    print(f"Saved SS steps: {prefix}_ss_steps.csv")
-    print(f"Saved variance explained: {prefix}_variance_explained.csv")
-    print(f"Saved assumption checks: {prefix}_assumption_checks.csv")
-    print(f"Saved diagnostic plots: {diagnostics_dir}")
+                    levels_table[config][metric] = {"y_j_mean": y_mean, "errors_ij": errors_list, "y_ij": y_ij_list}
+
+            global_info = {}
+            metric_info_dict = {}
+            f_critical = stats.f.ppf(
+                1 - alpha, len(levels_table.keys()) - 1, len(levels_table.keys()) * (repetitions - 1)
+            )
+            for level in levels_table.keys():
+                for metric in levels_table.get(level, {}).keys():
+                    if metric_info_dict.get(metric, None) is None:
+                        metric_info_dict[metric] = {}
+                        metric_info_dict[metric]["y_ij"] = levels_table[level][metric]["y_ij"]
+                        metric_info_dict[metric]["mean"] = [levels_table[level][metric]["y_j_mean"]]
+                        metric_info_dict[metric]["error"] = levels_table[level][metric]["errors_ij"]
+                    else:
+                        metric_info_dict[metric]["y_ij"].extend(levels_table[level][metric]["y_ij"])
+                        metric_info_dict[metric]["mean"].append(levels_table[level][metric]["y_j_mean"])
+                        metric_info_dict[metric]["error"].extend(levels_table[level][metric]["errors_ij"])
+            for metric, metric_values in metric_info_dict.items():
+                global_info[metric] = {
+                    "mean": np.mean(metric_values["mean"]),
+                    "SSY": np.sum(np.square(metric_values["y_ij"])),
+                    "SSE": np.sum(np.square(metric_values["error"])),
+                    "SSA": 0.0,
+                }
+                global_info[metric]["SS0"] = (
+                    len(levels_table.keys()) * repetitions * np.square(global_info[metric]["mean"])
+                )
+                global_info[metric]["SST"] = global_info[metric]["SSY"] - global_info[metric]["SS0"]
+
+            for level in levels_table.keys():
+                for metric in levels_table.get(level, {}).keys():
+                    levels_table[level][metric]["alpha_j"] = (
+                        levels_table[level][metric]["y_j_mean"] - global_info[metric]["mean"]
+                    )
+                    global_info[metric]["SSA"] += np.square(levels_table[level][metric]["alpha_j"])
+
+            for metric, metric_values in metric_info_dict.items():
+                global_info[metric]["SSA"] *= repetitions
+                global_info[metric]["Explained Var"] = (
+                    global_info[metric]["SSA"] / global_info[metric]["SST"]
+                    if global_info[metric]["SST"] > 0.0
+                    else 0.0
+                )
+                global_info[metric]["se^2"] = global_info[metric]["SSE"] / (
+                    len(levels_table.keys()) * (repetitions - 1)
+                )
+                global_info[metric]["MSA"] = global_info[metric]["SSA"] / (len(levels_table.keys()) - 1)
+                global_info[metric]["MSE"] = global_info[metric]["SSE"] / (
+                    len(levels_table.keys()) * (repetitions - 1)
+                )
+                global_info[metric]["F_calc"] = (
+                    global_info[metric]["MSA"] / global_info[metric]["MSE"]
+                    if global_info[metric]["MSE"] > 0.0
+                    else -np.inf
+                )
+                global_info[metric]["significant"] = global_info[metric]["F_calc"] > f_critical
+
+            print(global_info)
+    else:
+        responses_df = collect_response_rows(design_df, results_dir, baseline, response_transform)
+        if responses_df.empty:
+            print(f"No rows collected for {design_file}. Skipping.")
+            return
+
+        experiment = str(design_df.loc[0, "experiment"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        factorial_df = build_factorial_df(responses_df, design_df, factors)
+        factorial_display_df = build_factorial_display_df(factorial_df, factors)
+        effects_df = build_effects_df(factorial_df, factors, alpha)
+        coefficients_df = build_coefficients_df(factorial_df, effects_df)
+        confidence_intervals_df = build_confidence_intervals_df(effects_df, factorial_df, alpha)
+        ss_steps_df = build_ss_steps_df(factorial_df, effects_df)
+        variance_df = build_variance_explained_df(effects_df, factorial_df)
+        residuals_df = build_residuals_df(responses_df, coefficients_df, factors)
+        assumptions_df = build_assumption_checks_df(residuals_df, factorial_df, effects_df, factors, alpha)
+        response_label = f"{response}{transform_output_suffix(response_transform, response_transforms is not None)}"
+        diagnostics_dir = output_dir / f"{experiment}_{response_label}_diagnostics"
+
+        prefix = output_dir / f"{experiment}_{response_label}"
+        responses_df.to_csv(f"{prefix}_raw_responses.csv", index=False)
+        factorial_df.to_csv(f"{prefix}_treatments.csv", index=False)
+        factorial_display_df.to_csv(f"{prefix}_factorial_df.csv", index=False)
+        coefficients_df.to_csv(f"{prefix}_coefficients.csv", index=False)
+        effects_df.to_csv(f"{prefix}_effects.csv", index=False)
+        confidence_intervals_df.to_csv(f"{prefix}_confidence_intervals.csv", index=False)
+        ss_steps_df.to_csv(f"{prefix}_ss_steps.csv", index=False)
+        variance_df.to_csv(f"{prefix}_variance_explained.csv", index=False)
+        residuals_df.to_csv(f"{prefix}_residuals.csv", index=False)
+        assumptions_df.to_csv(f"{prefix}_assumption_checks.csv", index=False)
+        save_diagnostic_plots(residuals_df, diagnostics_dir)
+
+        print(f"\n=== {experiment}: {response} ===")
+        print(f"Response transform: {response_transform}")
+        print(f"Factors: {', '.join(factors)}")
+        print(f"Rows: {len(responses_df)} responses, {len(factorial_df)} treatments")
+        print(f"Saved classroom factorial table: {prefix}_factorial_df.csv")
+        print(f"Saved coefficients: {prefix}_coefficients.csv")
+        print(f"Saved confidence intervals: {prefix}_confidence_intervals.csv")
+        print(f"Saved SS steps: {prefix}_ss_steps.csv")
+        print(f"Saved variance explained: {prefix}_variance_explained.csv")
+        print(f"Saved assumption checks: {prefix}_assumption_checks.csv")
+        print(f"Saved diagnostic plots: {diagnostics_dir}")
 
 
 def build_parser() -> argparse.ArgumentParser:
