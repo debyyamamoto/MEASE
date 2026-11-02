@@ -4,7 +4,6 @@ import argparse
 from itertools import combinations
 import math
 import re
-from glob import glob
 from pathlib import Path
 
 import matplotlib
@@ -96,11 +95,11 @@ def require_range(values: np.ndarray, transform: str, lower: float, upper: float
         raise ValueError(f"The '{transform}' transform requires response values in [{lower}, {upper}].")
 
 
-def apply_response_transform(values: pd.Series, transform: str) -> tuple[np.ndarray, dict[str, float | str]] | None:
+def apply_response_transform(values: pd.Series, transform: str) -> tuple[np.ndarray, dict[str, float | str]]:
     transform = normalize_transform_name(transform)
     numeric_values = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
-    if np.isnan(numeric_values).any():
-        print("Response values contain NaN after numeric conversion.")
+    if not np.isfinite(numeric_values).all():
+        raise ValueError("Response values must be finite numbers.")
 
     metadata: dict[str, float | str] = {"response_transform": transform}
     if transform == IDENTITY_TRANSFORM:
@@ -108,12 +107,12 @@ def apply_response_transform(values: pd.Series, transform: str) -> tuple[np.ndar
 
     if transform == "log":
         if (numeric_values <= 0).any():
-            print("The 'log' transform requires strictly positive response values.")
+            raise ValueError("The 'log' transform requires strictly positive response values.")
         return np.log(numeric_values), metadata
 
     if transform == "sqrt":
         if (numeric_values < 0).any():
-            print("The 'sqrt' transform requires non-negative response values.")
+            raise ValueError("The 'sqrt' transform requires non-negative response values.")
         return np.sqrt(numeric_values), metadata
 
     if transform == "arcsin_sqrt":
@@ -126,16 +125,16 @@ def apply_response_transform(values: pd.Series, transform: str) -> tuple[np.ndar
         metadata["transform_epsilon"] = LOGIT_EPSILON
         return np.log(clipped / (1 - clipped)), metadata
 
-    # if transform == "box_cox":
-    #     if (numeric_values <= 0).any():
-    #         raise ValueError("The 'box_cox' transform requires strictly positive response values.")
-    #     transformed, lambda_value = stats.boxcox(numeric_values)
-    #     metadata["transform_lambda"] = float(lambda_value)
-    #     return transformed, metadata
-
-    # transformed, lambda_value = stats.yeojohnson(numeric_values)
-    # metadata["transform_lambda"] = float(lambda_value)
-    # return transformed, metadata
+    if np.ptp(numeric_values) == 0:
+        raise ValueError(f"The '{transform}' transform requires nonconstant response values.")
+    if transform == "box_cox":
+        if (numeric_values <= 0).any():
+            raise ValueError("The 'box_cox' transform requires strictly positive response values.")
+        transformed, lambda_value = stats.boxcox(numeric_values)
+    else:
+        transformed, lambda_value = stats.yeojohnson(numeric_values)
+    metadata["transform_lambda"] = float(lambda_value)
+    return transformed, metadata
 
 
 def parse_dataset_spec(dataset_spec: str) -> tuple[str, Path, str, str]:
@@ -983,6 +982,255 @@ def save_diagnostic_plots(residuals_df: pd.DataFrame, output_dir: Path) -> None:
     plt.close()
 
 
+def collect_one_factor_rows(
+    design_df: pd.DataFrame,
+    results_dir: Path,
+    baseline: str,
+    response_transforms: dict[str, str] | None,
+) -> pd.DataFrame:
+    """Use the original metric selection, computing ANOVA from individual runs."""
+    factors = factor_columns(design_df)
+    if len(factors) != 1:
+        raise ValueError("One-factor sensitivity requires exactly one varying factor.")
+    factor = factors[0]
+    for column in ("experiment", "dataset", "response"):
+        if design_df[column].nunique(dropna=False) != 1:
+            raise ValueError(f"One-factor sensitivity requires one {column} per design.")
+    if design_df["factor"].duplicated().any() or design_df[factor].duplicated().any():
+        raise ValueError("Each factor level must have exactly one design row and a unique config.")
+    if design_df[factor].isna().any():
+        raise ValueError("Factor levels cannot be missing.")
+
+    rows = []
+    expected_metrics = None
+    for _, treatment in design_df.iterrows():
+        dataset_name, _, _, _ = parse_dataset_spec(treatment["dataset"])
+        config = str(treatment["factor"])
+        experiment_root = results_dir / str(treatment["experiment"])
+        treatment_dir = resolve_treatment_dir(
+            experiment_root, ALL_METRICS, treatment, dataset_name, baseline, METRICS_FILE
+        )
+        aggregate = pd.read_csv(treatment_dir / f"{dataset_name}_{baseline}_{METRICS_FILE}.csv")
+        # The last three metrics are intentionally excluded, as in the original analysis.
+        metrics = aggregate["metric"].iloc[:-3].tolist()
+        if not metrics:
+            raise ValueError(f"No metrics remain after excluding the last three in {treatment_dir}")
+        if expected_metrics is None:
+            expected_metrics = metrics
+        if metrics != expected_metrics:
+            raise ValueError(f"Inconsistent metric selection in {treatment_dir}")
+        pattern = re.compile(rf"^{re.escape(dataset_name)}_(\d+)_{re.escape(baseline)}_{METRICS_FILE}\.csv$")
+        files = sorted(path for path in treatment_dir.glob("*.csv") if pattern.fullmatch(path.name))
+        if not files:
+            raise FileNotFoundError(f"No per-execution metrics found in {treatment_dir}")
+        executions = set()
+        for path in files:
+            execution = execution_from_file(path, dataset_name, baseline, METRICS_FILE)
+            if execution in executions:
+                raise ValueError(f"Duplicate execution {execution} in {treatment_dir}")
+            executions.add(execution)
+            values = pd.read_csv(path)
+            if len(values) != 1 or values.empty:
+                raise ValueError(f"Expected exactly one row of metrics in {path}")
+            if not set(metrics).issubset(values.columns):
+                raise ValueError(f"Inconsistent metric columns in {path}")
+            for metric, value in values.loc[0, metrics].items():
+                rows.append(
+                    {
+                        "config": config,
+                        "factor_level": treatment[factor],
+                        "execution": execution,
+                        "metric": metric,
+                        "y_raw": value,
+                    }
+                )
+
+    responses_df = pd.DataFrame(rows)
+    for metric, group in responses_df.groupby("metric", sort=False):
+        metric = str(metric)
+        transform = select_response_transform(metric, response_transforms)
+        try:
+            transformed, metadata = apply_response_transform(group["y_raw"], transform)
+        except ValueError as exc:
+            raise ValueError(f"Metric '{metric}': {exc}") from exc
+        responses_df.loc[group.index, "y"] = transformed
+        for column, value in metadata.items():
+            if column not in responses_df:
+                responses_df[column] = None
+            responses_df.loc[group.index, column] = value
+    return responses_df
+
+
+def build_one_factor_summary(
+    responses_df: pd.DataFrame,
+    alpha: float,
+) -> tuple[dict[str, dict], pd.DataFrame]:
+    """Classical one-way ANOVA, including unequal numbers of replications."""
+    if not 0 < alpha < 1:
+        raise ValueError("alpha must be between 0 and 1.")
+    global_info = {}
+    treatments = []
+    for metric, metric_df in responses_df.groupby("metric", sort=False):
+        grouped = list(metric_df.groupby("config", sort=False))
+        groups = [group["y"].to_numpy(dtype=float) for _, group in grouped]
+        values = np.concatenate(groups)
+        if not np.isfinite(values).all():
+            raise ValueError(f"Metric '{metric}' contains nonfinite values.")
+        k, n = len(groups), len(values)
+        if k < 2 or n <= k:
+            raise ValueError(f"Metric '{metric}' needs at least two levels and positive residual degrees of freedom.")
+        # Center before summation to avoid cancellation in SSY - SS0.
+        origin = values[0]
+        centered = values - origin
+        grand_offset = float(centered.mean())
+        offsets = [
+            float(group[0] - origin) if np.ptp(group) == 0 else float((group - origin).mean()) for group in groups
+        ]
+        effects = np.array(offsets) - grand_offset
+        residuals = np.concatenate([(group - origin) - offset for group, offset in zip(groups, offsets)])
+        sse = float(residuals @ residuals)
+        ssa = float(sum(len(group) * effect**2 for group, effect in zip(groups, effects)))
+        sst = float(np.sum((centered - grand_offset) ** 2))
+        df_factor, df_error = k - 1, n - k
+        msa, mse = ssa / df_factor, sse / df_error
+        f_value = msa / mse if mse > 0 else (math.inf if ssa > 0 else math.nan)
+        p_value = float(stats.f.sf(f_value, df_factor, df_error))
+        f_critical = float(stats.f.ppf(1 - alpha, df_factor, df_error))
+        global_info[metric] = {
+            "mean": origin + grand_offset,
+            "n_total": n,
+            "n_levels": k,
+            "balanced": len({len(group) for group in groups}) == 1,
+            "SSY": float(values @ values),
+            "SS0": float(n * (origin + grand_offset) ** 2),
+            "SST": sst,
+            "SSA": ssa,
+            "SSE": sse,
+            "df_factor": df_factor,
+            "df_error": df_error,
+            "MSA": msa,
+            "MSE": mse,
+            "se^2": mse,
+            "F_calc": f_value,
+            "F_critical": f_critical,
+            "p_value": p_value,
+            "alpha_sig": alpha,
+            "significant": bool(p_value < alpha),
+            "Explained Var": ssa / sst if sst > 0 else math.nan,
+            "response_transform": metric_df["response_transform"].iloc[0],
+        }
+        for (config, group_df), group, offset, effect in zip(grouped, groups, offsets, effects):
+            mean = origin + offset
+            treatments.append(
+                {
+                    "metric": metric,
+                    "config": config,
+                    "factor_level": group_df["factor_level"].iloc[0],
+                    "n": len(group),
+                    "y_j_mean": mean,
+                    "y_raw_mean": group_df["y_raw"].mean(),
+                    "alpha_j": effect,
+                    "response_transform": metric_df["response_transform"].iloc[0],
+                }
+            )
+
+    return global_info, pd.DataFrame(treatments)
+
+
+def save_one_factor_impact_plot(
+    treatments_df: pd.DataFrame,
+    global_info: dict[str, dict],
+    factor: str,
+    prefix: Path,
+) -> list[Path]:
+    """Plot significant metrics only when the factor has numeric levels."""
+    paths = [Path(f"{prefix}_significant_impact.png")]
+    metrics = [metric for metric, info in global_info.items() if info["significant"]]
+    numeric_levels = pd.to_numeric(treatments_df["factor_level"], errors="coerce")
+    if not metrics or numeric_levels.isna().any():
+        for path in paths:
+            path.unlink(missing_ok=True)  # Remove plots that no longer apply to this analysis.
+        return []
+    treatments_df = treatments_df.assign(factor_level=numeric_levels)
+    ncols = min(3, len(metrics))
+    nrows = math.ceil(len(metrics) / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.6 * nrows), squeeze=False)
+    for ax, metric in zip(axes.flat, metrics):
+        info = global_info[metric]
+        summary = treatments_df[treatments_df["metric"] == metric].sort_values("factor_level")
+        x = summary["factor_level"].to_numpy(dtype=float)
+        ax.plot(
+            x,
+            summary["y_j_mean"],
+            "o-",
+            color="#b64b2d",
+            linewidth=1.5,
+        )
+        rotation = 90 if np.diff(x).min() < 0.08 * np.ptp(x) else 25
+        ax.set_xticks(x, summary["factor_level"].astype(str), rotation=rotation, fontsize=9)
+        transform = info["response_transform"]
+        ax.set_ylabel(metric if transform == IDENTITY_TRANSFORM else f"{transform}({metric})")
+        ax.set_xlabel(factor)
+        ax.set_title(f"{metric}\np={info['p_value']:.3g}; η²={info['Explained Var']:.1%}", fontsize=10)
+        ax.grid(alpha=0.2)
+    for ax in axes.flat[len(metrics) :]:
+        ax.set_visible(False)
+    fig.suptitle(f"Impact of {factor} on significant metrics", fontsize=14)
+    fig.text(
+        0.5,
+        0.01,
+        f"Mean response by factor level. Selection: ANOVA, alpha={global_info[metrics[0]]['alpha_sig']:g}.",
+        ha="center",
+        fontsize=9,
+    )
+    fig.tight_layout(rect=(0, 0.07, 1, 0.96))
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    for path in paths:
+        fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return paths
+
+
+def analyze_one_factor(
+    design_df: pd.DataFrame,
+    results_dir: Path,
+    output_dir: Path,
+    baseline: str,
+    alpha: float,
+    response_transforms: dict[str, str] | None,
+) -> None:
+    responses_df = collect_one_factor_rows(design_df, results_dir, baseline, response_transforms)
+    global_info, treatments_df = build_one_factor_summary(responses_df, alpha)
+
+    output_dir = output_dir / "sensitivity_analysis"
+    experiment = str(design_df.loc[0, "experiment"])
+    suffix = "_transformed" if (responses_df["response_transform"] != IDENTITY_TRANSFORM).any() else ""
+    prefix = output_dir / f"{experiment}_all{suffix}"
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    summary = pd.DataFrame.from_dict(global_info, orient="index").rename_axis("metric")
+    summary = summary[[
+        "df_factor", "df_error", "F_calc", "F_critical", "p_value", "alpha_sig", "significant",
+        "Explained Var", "response_transform",
+    ]]
+    factor = factor_columns(design_df)[0]
+    summary.insert(0, "factor", factor)
+    summary.to_csv(f"{prefix}_anova.csv")
+
+    print(f"\n=== {factor}: ANOVA (last three metrics excluded) ===")
+    print(summary.drop(columns=["factor", "response_transform"]).to_string(
+        formatters={"Explained Var": "{:.2%}".format},
+    ))
+    print(f"Saved ANOVA: {prefix}_anova.csv")
+    paths = save_one_factor_impact_plot(treatments_df, global_info, factor, prefix)
+    if paths:
+        print("Saved impact plots: " + ", ".join(map(str, paths)))
+    elif pd.to_numeric(design_df[factor], errors="coerce").isna().any():
+        print("Categorical factor: significance and explained variance reported above; no impact plot.")
+    else:
+        print("No significant metrics; no impact plot.")
+
+
 def analyze_design(
     design_file: Path,
     results_dir: Path,
@@ -995,97 +1243,8 @@ def analyze_design(
     response = str(design_df.loc[0, "response"])
     response_transform = select_response_transform(response, response_transforms)
     factors = factor_columns(design_df)
-    if len(factors) == 1:
-        response = str(design_df.loc[0, "response"])
-        if response == ALL_METRICS:
-            levels_table = {}
-            levels_table: dict[str, dict[str, dict]]
-            repetitions = 0
-            for _, treatment in design_df.iterrows():
-                dataset_name, _, _, _ = parse_dataset_spec(treatment["dataset"])
-                config = str(treatment["factor"])
-                experiment = treatment["experiment"]
-                treatment_dir = Path(results_dir / experiment / response / config / dataset_name / baseline)
-
-                levels_table[config] = {}
-
-                stats_metrics_df = pd.read_csv(treatment_dir / f"{dataset_name}_{baseline}_RulesMetricsResult.csv")
-                if "metric" not in stats_metrics_df.columns:
-                    print("\n")
-                    print(treatment_dir / f"{dataset_name}_{baseline}_RulesMetricsResult.csv")
-                    continue
-                for metric in stats_metrics_df["metric"][:-3]:
-                    metrics_files = glob(f"{treatment_dir}/*RulesMetricsResult.csv")
-                    metrics_files.remove(f"{treatment_dir}/{dataset_name}_{baseline}_RulesMetricsResult.csv")
-                    repetitions = len(metrics_files)
-
-                    y_mean = stats_metrics_df[stats_metrics_df["metric"] == metric]["mean"].values[0]
-                    y_ij_list = []
-                    errors_list = []
-                    for file in metrics_files:
-                        metrics_value = pd.read_csv(file)[metric].values[0]
-                        y_ij_list.append(metrics_value)
-                        errors_list.append(metrics_value - y_mean)
-
-                    levels_table[config][metric] = {"y_j_mean": y_mean, "errors_ij": errors_list, "y_ij": y_ij_list}
-
-            global_info = {}
-            metric_info_dict = {}
-            f_critical = stats.f.ppf(
-                1 - alpha, len(levels_table.keys()) - 1, len(levels_table.keys()) * (repetitions - 1)
-            )
-            for level in levels_table.keys():
-                for metric in levels_table.get(level, {}).keys():
-                    if metric_info_dict.get(metric, None) is None:
-                        metric_info_dict[metric] = {}
-                        metric_info_dict[metric]["y_ij"] = levels_table[level][metric]["y_ij"]
-                        metric_info_dict[metric]["mean"] = [levels_table[level][metric]["y_j_mean"]]
-                        metric_info_dict[metric]["error"] = levels_table[level][metric]["errors_ij"]
-                    else:
-                        metric_info_dict[metric]["y_ij"].extend(levels_table[level][metric]["y_ij"])
-                        metric_info_dict[metric]["mean"].append(levels_table[level][metric]["y_j_mean"])
-                        metric_info_dict[metric]["error"].extend(levels_table[level][metric]["errors_ij"])
-            for metric, metric_values in metric_info_dict.items():
-                global_info[metric] = {
-                    "mean": np.mean(metric_values["mean"]),
-                    "SSY": np.sum(np.square(metric_values["y_ij"])),
-                    "SSE": np.sum(np.square(metric_values["error"])),
-                    "SSA": 0.0,
-                }
-                global_info[metric]["SS0"] = (
-                    len(levels_table.keys()) * repetitions * np.square(global_info[metric]["mean"])
-                )
-                global_info[metric]["SST"] = global_info[metric]["SSY"] - global_info[metric]["SS0"]
-
-            for level in levels_table.keys():
-                for metric in levels_table.get(level, {}).keys():
-                    levels_table[level][metric]["alpha_j"] = (
-                        levels_table[level][metric]["y_j_mean"] - global_info[metric]["mean"]
-                    )
-                    global_info[metric]["SSA"] += np.square(levels_table[level][metric]["alpha_j"])
-
-            for metric, metric_values in metric_info_dict.items():
-                global_info[metric]["SSA"] *= repetitions
-                global_info[metric]["Explained Var"] = (
-                    global_info[metric]["SSA"] / global_info[metric]["SST"]
-                    if global_info[metric]["SST"] > 0.0
-                    else 0.0
-                )
-                global_info[metric]["se^2"] = global_info[metric]["SSE"] / (
-                    len(levels_table.keys()) * (repetitions - 1)
-                )
-                global_info[metric]["MSA"] = global_info[metric]["SSA"] / (len(levels_table.keys()) - 1)
-                global_info[metric]["MSE"] = global_info[metric]["SSE"] / (
-                    len(levels_table.keys()) * (repetitions - 1)
-                )
-                global_info[metric]["F_calc"] = (
-                    global_info[metric]["MSA"] / global_info[metric]["MSE"]
-                    if global_info[metric]["MSE"] > 0.0
-                    else -np.inf
-                )
-                global_info[metric]["significant"] = global_info[metric]["F_calc"] > f_critical
-
-            print(global_info)
+    if response == ALL_METRICS:
+        analyze_one_factor(design_df, results_dir, output_dir, baseline, alpha, response_transforms)
     else:
         responses_df = collect_response_rows(design_df, results_dir, baseline, response_transform)
         if responses_df.empty:
@@ -1135,7 +1294,7 @@ def analyze_design(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Manual 2^k r factorial analysis for MEASE experiment outputs.",
+        description="One-factor sensitivity (response=all) and 2^k r factorial analysis for MEASE outputs.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--designs", nargs="+", type=Path, default=DEFAULT_DESIGNS)
