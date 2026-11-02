@@ -1,0 +1,6 @@
+experiment,factor,redundancy_similarity_threshold,dataset,response
+redundancy_similarity_threshold,redundancy_similarity_threshold_10,0.1,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+redundancy_similarity_threshold,redundancy_similarity_threshold_30,0.3,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+redundancy_similarity_threshold,redundancy_similarity_threshold_50,0.5,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+redundancy_similarity_threshold,redundancy_similarity_threshold_70,0.7,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+redundancy_similarity_threshold,redundancy_similarity_threshold_90,0.9,mgus2|datasets/files/mgus2.parquet|futime|status|,all

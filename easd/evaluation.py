@@ -1,12 +1,10 @@
 from __future__ import annotations
-
-from typing import Literal
-
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 
 from .dataset import Dataset
+from .survival_curves import KaplanMeierGrid, kaplan_meier_from_counts, weighted_rms_distance
 
 SCORE_METRICS: tuple[str, ...] = (
     "legacy_logrank",
@@ -20,8 +18,6 @@ SCORE_METRICS: tuple[str, ...] = (
 KM_GRID_SCORE_METRICS = ("km_cvm", "km_abc", "mdir2", "mdir3", "mdir4")
 MDIR_SCORE_METRICS = ("mdir2", "mdir3", "mdir4")
 
-MIN_RELATIVE_SUPPORT = 0.05
-MAX_RELATIVE_SUPPORT = 0.55
 EPSILON = 1e-12
 
 MDIR_WEIGHT_SETS: dict[str, tuple[tuple[int, int] | str, ...]] = {
@@ -41,6 +37,8 @@ class RuleEvaluator:
         km_time_bins: int | None = 512,
         redundancy_penalty: float = 0.0,
         redundancy_similarity_threshold: float = 0.9,
+        min_relative_supp: float = 0.05,
+        max_relative_supp: float = 0.55,
     ):
         if comparacao not in ("complement", "population"):
             raise ValueError("comparacao must be either 'complement' or 'population'.")
@@ -68,6 +66,8 @@ class RuleEvaluator:
         self._time_values = self._survival_times.to_numpy(dtype=float, copy=False)
         self._event_values = self._events.to_numpy(dtype=int, copy=False)
         self._event_observed = self._event_values.astype(bool)
+        self.min_relative_supp = min_relative_supp
+        self.max_relative_supp = max_relative_supp
 
         self._logrank_gamma = np.zeros(self._n, dtype=float)
         self._logrank_residual = self._event_values.astype(float)
@@ -125,7 +125,7 @@ class RuleEvaluator:
             return 0.0
 
         relative_support = covered_count / self._n
-        if relative_support > MAX_RELATIVE_SUPPORT or relative_support < MIN_RELATIVE_SUPPORT:
+        if relative_support > self.max_relative_supp or relative_support < self.min_relative_supp:
             return 0.0
 
         if covered_count >= self._n:
@@ -255,61 +255,10 @@ class RuleEvaluator:
         return float(statistic / (1.0 + statistic))
 
     def _precompute_km_grid(self) -> None:
-        event_times = np.sort(np.unique(self._time_values[self._event_observed]))
-        if event_times.size == 0:
-            return
-
-        exact_grid = self.km_time_bins is None or event_times.size <= self.km_time_bins
-        if exact_grid:
-            grid_times = event_times
-        elif self.km_time_bins is not None:
-            quantiles = np.linspace(0.0, 1.0, self.km_time_bins)
-            grid_times = np.unique(np.quantile(event_times, quantiles))
-        else:
-            grid_times = event_times
-
-        if grid_times.size == 0:
-            return
-
-        self._km_grid_times = grid_times.astype(float, copy=False)
-        grid_size = self._km_grid_times.size
-        max_time = max(float(np.max(self._time_values)), float(self._km_grid_times[-1]))
-        self._km_widths = np.diff(np.r_[self._km_grid_times, max_time])
-        self._km_widths = np.maximum(self._km_widths, 0.0)
-
-        if exact_grid:
-            risk_bin = np.searchsorted(self._km_grid_times, self._time_values, side="right") - 1
-            event_bin = np.full(self._n, -1, dtype=int)
-            event_bin[self._event_observed] = np.searchsorted(
-                self._km_grid_times,
-                self._time_values[self._event_observed],
-                side="left",
-            )
-        else:
-            risk_bin = np.searchsorted(self._km_grid_times, self._time_values, side="left")
-            risk_bin = np.clip(risk_bin, 0, grid_size - 1)
-            risk_bin[self._time_values < self._km_grid_times[0]] = -1
-            event_bin = np.full(self._n, -1, dtype=int)
-            event_bin[self._event_observed] = risk_bin[self._event_observed]
-
-        self._km_risk_bin = risk_bin.astype(int, copy=False)
-        self._km_event_bin = event_bin.astype(int, copy=False)
-
-        valid_risk = self._km_risk_bin >= 0
-        self._km_pooled_subject_counts = np.bincount(self._km_risk_bin[valid_risk], minlength=grid_size).astype(float)
-        valid_events = self._km_event_bin >= 0
-        self._km_pooled_event_counts = np.bincount(self._km_event_bin[valid_events], minlength=grid_size).astype(float)
-        self._km_pooled_risk_counts = np.cumsum(self._km_pooled_subject_counts[::-1])[::-1]
-        self._km_pooled_survival = self._kaplan_meier_from_counts(
-            self._km_pooled_event_counts,
-            self._km_pooled_risk_counts,
-        )
-        self._km_weights = np.divide(
-            self._km_pooled_risk_counts,
-            float(self._n),
-            out=np.zeros_like(self._km_pooled_risk_counts),
-            where=self._km_pooled_risk_counts > 0.0,
-        )
+        grid = KaplanMeierGrid(self._time_values, self._event_observed, self.km_time_bins)
+        for name in ("grid_times", "widths", "weights", "risk_bin", "event_bin",
+                     "pooled_subject_counts", "pooled_event_counts", "pooled_risk_counts", "pooled_survival"):
+            setattr(self, "_km_" + name, getattr(grid, name))
 
     def _km_distance_score(self, rule_mask: np.ndarray) -> float:
         if self._km_grid_times.size == 0:
@@ -358,24 +307,9 @@ class RuleEvaluator:
         first_curve: tuple[np.ndarray, np.ndarray],
         second_curve: tuple[np.ndarray, np.ndarray],
     ) -> float:
-        first_survival, first_risk_counts = first_curve
-        second_survival, second_risk_counts = second_curve
-
-        valid = (
-            (first_risk_counts > 0.0) & (second_risk_counts > 0.0) & (self._km_widths > 0.0) & (self._km_weights > 0.0)
-        )
-        if not np.any(valid):
-            return 0.0
-
-        weighted_widths = self._km_widths[valid] * self._km_weights[valid]
-        normalizer = float(weighted_widths.sum())
-        if normalizer <= EPSILON:
-            return 0.0
-
-        difference = first_survival[valid] - second_survival[valid]
-        mean_squared_distance = float(np.sum(weighted_widths * difference * difference) / normalizer)
-        rms_distance = np.sqrt(min(max(mean_squared_distance, 0.0), 1.0))
-        return float(1.0 - rms_distance)
+        distance = weighted_rms_distance(first_curve, second_curve, self._km_widths, self._km_weights)
+        # Preserve the archive's existing behavior for unsupported comparisons.
+        return float(1.0 - distance) if np.isfinite(distance) else 0.0
 
     def _group_km_counts(self, rule_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         grid_size = self._km_grid_times.size
@@ -474,6 +408,4 @@ class RuleEvaluator:
         return float(statistic / (1.0 + statistic))
 
     def _kaplan_meier_from_counts(self, event_counts: np.ndarray, risk_counts: np.ndarray) -> np.ndarray:
-        hazards = np.divide(event_counts, risk_counts, out=np.zeros_like(event_counts), where=risk_counts > 0.0)
-        hazards = np.clip(hazards, 0.0, 1.0)
-        return np.cumprod(1.0 - hazards)
+        return kaplan_meier_from_counts(event_counts, risk_counts)

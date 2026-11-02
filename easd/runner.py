@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from dataclasses import dataclass, field
 from typing import Literal
 from pathlib import Path
@@ -41,6 +42,8 @@ class RunConfig:
     redundancy_penalty: float = 0.0
     redundancy_similarity_threshold: float = 0.9
     archive_selection: Literal["historical", "greedy"] = "historical"
+    min_relative_supp: float = 0.05
+    max_relative_supp: float = 0.55
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,11 @@ def run_dataset(config: RunConfig) -> RunSummary:
     metrics_list: list[dict] = []
 
     for run in range(config.executions):
+        if os.path.exists(output_dir / f"{dataset_name}_{run}_{config.comparacao}_DetailedRules.csv"):
+            print(
+                f"Output path {output_dir} already filled, either change the `output_dir` or delete the existing files."
+            )
+            continue
         seed = config.seed if config.seed is not None else run
         print(f"--- Running dataset {dataset_name} ({run + 1}/{config.executions}) ---")
 
@@ -98,6 +106,8 @@ def run_dataset(config: RunConfig) -> RunSummary:
             redundancy_penalty=config.redundancy_penalty,
             redundancy_similarity_threshold=config.redundancy_similarity_threshold,
             archive_selection=config.archive_selection,
+            min_relative_supp=config.min_relative_supp,
+            max_relative_supp=config.max_relative_supp,
         )
 
         _, _, _, runtime, _, info, detailed_rules, top_rules, mean_rule_size, figures = sd.run()
@@ -108,6 +118,7 @@ def run_dataset(config: RunConfig) -> RunSummary:
             event_col=config.event_col,
             dataset_obj=sd.dataset_obj,
             baseline=config.comparacao,
+            km_time_bins=config.km_time_bins,
         ).as_dict()
         run_metrics.update(_topk_rule_score_metrics(detailed_rules))
         metrics_list.append(run_metrics)
@@ -212,7 +223,12 @@ def _save_run_outputs(
 
     detailed_rules.to_csv(output_dir / f"{dataset_name}_{run}_{baseline}_DetailedRules.csv", index=False)
     info.to_csv(output_dir / f"{dataset_name}_{run}_{baseline}_Info.csv", index=False)
-    pd.DataFrame([metrics]).round(2).to_csv(
+    exported_metrics = pd.DataFrame([metrics]).round(2)
+    # Retain enough precision for small differences in geometric separation.
+    if "mean_pairwise_rms" in metrics:
+        value = metrics["mean_pairwise_rms"]
+        exported_metrics["mean_pairwise_rms"] = f"{value:.8f}" if np.isfinite(value) else np.nan
+    exported_metrics.to_csv(
         output_dir / f"{dataset_name}_{run}_{baseline}_RulesMetricsResult.csv",
         index=False,
         float_format="%.4f",
@@ -239,67 +255,29 @@ def _save_aggregate_outputs(
     stats_path = output_dir / f"{dataset_name}_{baseline}_RulesStatsResult.csv"
     metrics_path = output_dir / f"{dataset_name}_{baseline}_RulesMetricsResult.csv"
 
-    stats_data = {
-        "mean_score": [
-            _format_mean_std(
-                np.mean(aggregate_state.scores, axis=0, dtype=np.float32).mean(),
-                np.mean(aggregate_state.scores, axis=0, dtype=np.float32).std(),
-            )
-        ],
-        "mean_runtime": [
-            _format_mean_std(
-                np.mean(aggregate_state.runtimes, axis=0, dtype=np.float32).mean(),
-                np.mean(aggregate_state.runtimes, axis=0, dtype=np.float32).std(),
-            )
-        ],
-        "mean_rule_size": [
-            _format_mean_std(
-                np.mean(aggregate_state.mean_rule_sizes, axis=0, dtype=np.float32).mean(),
-                np.mean(aggregate_state.mean_rule_sizes, axis=0, dtype=np.float32).std(),
-            )
-        ],
+    # Rule counts can differ across runs. Give each run equal weight by
+    # summarizing its scores first; empty runs use 0, as in _topk_rule_score_metrics.
+    values_by_metric = {
+        "mean_score": [float(scores.mean()) if scores.size else 0.0 for scores in aggregate_state.scores],
+        "mean_runtime": aggregate_state.runtimes,
+        "mean_rule_size": aggregate_state.mean_rule_sizes,
     }
     if debug_performance:
-        stats_data.update(
+        values_by_metric.update(
             {
-                "cpu_mean_percent": [
-                    _format_mean_std(
-                        np.mean(aggregate_state.cpu_mean_percent, axis=0, dtype=np.float32).mean(),
-                        np.mean(aggregate_state.cpu_mean_percent, axis=0, dtype=np.float32).std(),
-                    )
-                ],
-                "cpu_peak_percent": [
-                    _format_mean_std(
-                        np.mean(aggregate_state.cpu_peak_percent, axis=0, dtype=np.float32).mean(),
-                        np.mean(aggregate_state.cpu_peak_percent, axis=0, dtype=np.float32).std(),
-                    )
-                ],
-                "ram_mean_mb": [
-                    _format_mean_std(
-                        np.mean(aggregate_state.ram_mean_mb, axis=0, dtype=np.float32).mean(),
-                        np.mean(aggregate_state.ram_mean_mb, axis=0, dtype=np.float32).std(),
-                    )
-                ],
-                "ram_peak_mb": [
-                    _format_mean_std(
-                        np.mean(aggregate_state.ram_peak_mb, axis=0, dtype=np.float32).mean(),
-                        np.mean(aggregate_state.ram_peak_mb, axis=0, dtype=np.float32).std(),
-                    )
-                ],
-                "ram_incremental_peak_mb": [
-                    _format_mean_std(
-                        np.mean(aggregate_state.ram_incremental_peak_mb, axis=0, dtype=np.float32).mean(),
-                        np.mean(aggregate_state.ram_incremental_peak_mb, axis=0, dtype=np.float32).std(),
-                    )
-                ],
-                "ram_baseline_mb": [
-                    _format_mean_std(
-                        np.mean(aggregate_state.ram_baseline_mb, axis=0, dtype=np.float32).mean(),
-                        np.mean(aggregate_state.ram_baseline_mb, axis=0, dtype=np.float32).std(),
-                    )
-                ],
+                "cpu_mean_percent": aggregate_state.cpu_mean_percent,
+                "cpu_peak_percent": aggregate_state.cpu_peak_percent,
+                "ram_mean_mb": aggregate_state.ram_mean_mb,
+                "ram_peak_mb": aggregate_state.ram_peak_mb,
+                "ram_incremental_peak_mb": aggregate_state.ram_incremental_peak_mb,
+                "ram_baseline_mb": aggregate_state.ram_baseline_mb,
             }
         )
+
+    stats_data = {}
+    for name, values in values_by_metric.items():
+        run_values = np.asarray(values, dtype=float)
+        stats_data[name] = [_format_mean_std(run_values.mean(), run_values.std())]
 
     pd.DataFrame(stats_data).round(2).to_csv(stats_path, index=False)
     output_metrics(metrics_list, str(metrics_path))

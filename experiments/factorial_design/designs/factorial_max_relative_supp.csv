@@ -1,0 +1,4 @@
+experiment,factor,max_relative_supp,dataset,response
+max_relative_supp,max_relative_supp_45,0.45,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+max_relative_supp,max_relative_supp_65,0.65,mgus2|datasets/files/mgus2.parquet|futime|status|,all
+max_relative_supp,max_relative_supp_85,0.85,mgus2|datasets/files/mgus2.parquet|futime|status|,all
