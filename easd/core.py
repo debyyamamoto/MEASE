@@ -58,6 +58,8 @@ class MEASE:
         redundancy_penalty: float = 0.0,
         redundancy_similarity_threshold: float = 0.9,
         archive_selection: Literal["historical", "greedy"] = "historical",
+        min_relative_supp: float = 0.05,
+        max_relative_supp: float = 0.55,
     ):
         if rate_policy not in ("adaptive", "fixed"):
             raise ValueError("rate_policy must be either 'adaptive' or 'fixed'.")
@@ -104,6 +106,8 @@ class MEASE:
         self.operators = GeneticOperators(self.evaluation, self._get_best)
         self.top_n_plot = plot_n_rules
         self.coverage_threshold = coverage_threshold
+        self.min_relative_supp = min_relative_supp
+        self.max_relative_supp = max_relative_supp
         seed(self.seed)
         self.debug_performance = debug_performance
 
@@ -417,6 +421,8 @@ class MEASE:
             f"   - Rate policy: {self.rate_policy} "
             f"(crossover={self.crossover_rate}%, mutation={self.mutation_rate}%)"
         )
+        console.print(f"   - Min relative support: {self.min_relative_supp}")
+        console.print(f"   - Max relative support: {self.max_relative_supp}")
         print(f"{'='*70}")
 
         gen_count = 0

@@ -18,6 +18,7 @@ METRICS = [
     "CR",
     "model redundancy",
 ]
+OPTIONAL_METRICS = ["mean_pairwise_rms", "rms_valid_pairs"]
 
 
 def compile_metric_runs(
@@ -45,6 +46,8 @@ def compile_metric_runs(
 
             row = {"Dataset": dataset, "Execucao": execution}
             metrics = metrics_df.iloc[-1][METRICS].to_dict()
+            # Historical CSVs predate RMS; missing measurements stay missing.
+            metrics.update(metrics_df.iloc[-1].reindex(OPTIONAL_METRICS).to_dict())
             for k, v in metrics.items():
                 row[str(k)] = v
             rows.append(row)
