@@ -46,12 +46,42 @@ class OneFactorAnovaTests(unittest.TestCase):
             self.assertAlmostEqual(result[name], expected)
         np.testing.assert_allclose(treatments["alpha_j"], [-2, 2])
 
-    def test_centered_sums_are_stable_with_large_offset(self):
-        groups = [[1, 3], [5, 7]]
-        shifted = [[1e12 + value for value in group] for group in groups]
-        info, _ = analysis.build_one_factor_summary(response_rows(shifted), 0.05)
-        self.assertEqual(info["score"]["SST"], 20)
-        self.assertEqual(info["score"]["F_calc"], 8)
+    def test_balanced_example_from_lecture(self):
+        rows = response_rows([
+            [144, 120, 176, 288, 144],
+            [101, 144, 211, 288, 72],
+            [130, 180, 141, 374, 302],
+        ])
+        info, treatments = analysis.build_one_factor_summary(rows, 0.05)
+        result = info["score"]
+        # Use the observations, without rounding the means to the slide's display precision.
+        expected = {"mean": 2815 / 15, "SSY": 633639, "SS0": 2815**2 / 15,
+                    "SSA": 10992.1333333333, "SSE": 94365.2, "MSE": 7863.7666666667}
+        for name, value in expected.items():
+            self.assertAlmostEqual(result[name], value)
+        self.assertEqual(result["SST"], result["SSY"] - result["SS0"])
+        self.assertAlmostEqual(result["SSE"], result["SST"] - result["SSA"])
+        self.assertAlmostEqual(result["se"], np.sqrt(94365.2 / 12))
+        self.assertFalse(result["significant"])
+        np.testing.assert_allclose(treatments["y_j_mean"], [174.4, 163.2, 225.4])
+        np.testing.assert_allclose(treatments["alpha_j"], np.array([174.4, 163.2, 225.4]) - 2815 / 15)
+        residuals = analysis.build_one_factor_residuals(rows, treatments.iloc[::-1])
+        np.testing.assert_allclose(residuals["y_hat"], np.repeat([174.4, 163.2, 225.4], 5))
+        np.testing.assert_allclose(residuals["residual"], rows["y"] - residuals["y_hat"])
+        self.assertAlmostEqual(np.sum(residuals["residual"]**2), result["SSE"])
+
+    def test_unbalanced_example_from_lecture(self):
+        rows = response_rows([
+            [144, 120, 176, 288, 144], [101, 144, 211, 288], [130, 180, 141],
+        ])
+        info, treatments = analysis.build_one_factor_summary(rows, 0.1)
+        result = info["score"]
+        expected = {"mean": 172.25, "SSY": 397375, "SS0": 356040.75, "SST": 41334.25,
+                    "SSA": 2220.3833333333, "SSE": 39113.8666666667, "df_factor": 2, "df_error": 9}
+        for name, value in expected.items():
+            self.assertAlmostEqual(result[name], value)
+        self.assertAlmostEqual(np.sum(treatments["n"] * treatments["alpha_j"]), 0)
+        self.assertFalse(result["significant"])
 
     def test_zero_residual_variance_with_different_means_is_significant(self):
         for groups in ([[1, 1], [2, 2]], [[0.1] * 30, [0.3] * 30, [0.7] * 30]):
@@ -164,7 +194,7 @@ class OneFactorPipelineTests(unittest.TestCase):
         original_subplots = analysis.plt.subplots
         with patch.object(analysis.plt, "subplots", wraps=original_subplots) as subplots:
             analysis.analyze_design(design_path, self.root, output, "complement", 0.05, None)
-        self.assertEqual(subplots.call_args.args[:2], (1, 1))
+        self.assertEqual([call.args[:2] for call in subplots.call_args_list], [(1, 1), (1, 2), (1, 2)])
         self.assertEqual([path.name for path in output.iterdir()], ["sensitivity_analysis"])
         output = output / "sensitivity_analysis"
         summary = pd.read_csv(output / "population_all_anova.csv").set_index("metric")
@@ -177,6 +207,8 @@ class OneFactorPipelineTests(unittest.TestCase):
         })
         self.assertEqual(set(path.name for path in output.iterdir()), {
             "population_all_anova.csv", "population_all_significant_impact.png",
+            "population_all_residuals_vs_fitted.png",
+            "population_all_residuals_qq.png",
         })
         self.assertGreater((output / "population_all_significant_impact.png").stat().st_size, 100)
 
@@ -189,7 +221,7 @@ class OneFactorPipelineTests(unittest.TestCase):
         self.assertEqual(analysis.save_one_factor_impact_plot(summary, info, "factor", prefix), [])
         self.assertFalse(stale.exists())
 
-    def test_categorical_pipeline_reports_significance_and_variance_without_plot(self):
+    def test_categorical_pipeline_reports_anova_residuals_and_impact_plot(self):
         self.design = self.design.rename(columns={"population": "score_metric"})
         self.design["score_metric"] = ["fast_logrank", "km_abc"]
         design_path = self.root / "categorical.csv"
@@ -199,8 +231,10 @@ class OneFactorPipelineTests(unittest.TestCase):
         sensitivity_dir.mkdir(parents=True)
         stale = sensitivity_dir / "population_all_significant_impact.png"
         stale.write_bytes(b"old categorical plot")
-        with patch.object(analysis.plt, "subplots", side_effect=AssertionError("Unexpected categorical plot")):
+        with patch.object(analysis.plt, "subplots", wraps=analysis.plt.subplots) as subplots:
             analysis.analyze_design(design_path, self.root, output, "complement", 0.05, None)
+        self.assertEqual(subplots.call_count, 3)
+        self.assertEqual(subplots.call_args.args[:2], (1, 2))
         summary = pd.read_csv(sensitivity_dir / "population_all_anova.csv").set_index("metric")
         self.assertTrue((summary["factor"] == "score_metric").all())
         self.assertTrue(summary.loc["last_metric", "significant"])
@@ -209,7 +243,92 @@ class OneFactorPipelineTests(unittest.TestCase):
         self.assertAlmostEqual(summary.loc["last_metric", "Explained Var"], 150 / 154)
         self.assertEqual(summary.loc["unchanged", "Explained Var"], 0)
         self.assertAlmostEqual(summary.loc["last_metric", "F_calc"], 150)
-        self.assertEqual([path.name for path in sensitivity_dir.iterdir()], ["population_all_anova.csv"])
+        self.assertEqual({path.name for path in sensitivity_dir.iterdir()}, {
+            "population_all_anova.csv", "population_all_residuals_vs_fitted.png",
+            "population_all_residuals_qq.png", "population_all_significant_impact.png",
+        })
+        self.assertGreater(stale.stat().st_size, 100)
+
+    def test_impact_plot_preserves_categorical_labels_and_numeric_order(self):
+        info, treatments = analysis.build_one_factor_summary(self.collect(), 0.05)
+        for levels, labels, expected_x, expected_y, linestyle in (
+            (["km_abc", "fast_logrank"], ["km_abc", "fast_logrank"], [0, 1], [2, 12], "None"),
+            (["100", "10"], ["10", "100"], [10, 100], [12, 2], "-"),
+        ):
+            with self.subTest(levels=levels):
+                frame = treatments.copy()
+                frame["factor_level"] = frame["factor_level"].map(dict(zip([10, 100], levels)))
+                with patch.object(analysis.plt, "close"):
+                    analysis.save_one_factor_impact_plot(frame, info, "factor", self.root / "impact")
+                    figure = analysis.plt.gcf()
+                try:
+                    self.assertEqual(len(figure.axes), 1)  # Only the significant metric.
+                    ax = figure.axes[0]
+                    self.assertEqual([tick.get_text() for tick in ax.get_xticklabels()], labels)
+                    np.testing.assert_allclose(ax.lines[0].get_xdata(), expected_x)
+                    np.testing.assert_allclose(ax.lines[0].get_ydata(), expected_y)
+                    self.assertEqual(ax.lines[0].get_linestyle(), linestyle)
+                finally:
+                    analysis.plt.close(figure)
+
+    def test_residual_plot_uses_fitted_response_and_includes_nonsignificant_metrics(self):
+        rows = self.collect({"all": "log"})
+        info, treatments = analysis.build_one_factor_summary(rows, 0.05)
+        self.assertFalse(info["unchanged"]["significant"])
+        residuals = analysis.build_one_factor_residuals(rows, treatments)
+        with patch.object(analysis.plt, "close"):
+            path = analysis.save_one_factor_residual_plot(residuals, "population", self.root / "residuals")
+            figure = analysis.plt.gcf()
+        try:
+            self.assertTrue(path.is_file())
+            for ax, metric in zip(figure.axes, ["unchanged", "last_metric"]):
+                expected_x = np.repeat([
+                    np.log([1, 2, 3]).mean(),
+                    np.log([1, 2, 3] if metric == "unchanged" else [11, 12, 13]).mean(),
+                ], 3)
+                observed = rows.loc[rows["metric"] == metric, "y"].to_numpy()
+                np.testing.assert_allclose(ax.collections[0].get_offsets(),
+                                           np.column_stack([expected_x, observed - expected_x]))
+                self.assertEqual(ax.get_title(), f"log({metric})")
+        finally:
+            analysis.plt.close(figure)
+
+
+    def test_qq_plot_uses_transformed_residuals_for_all_metrics(self):
+        rows = self.collect({"all": "log"})
+        info, treatments = analysis.build_one_factor_summary(rows, 0.05)
+        self.assertFalse(info["unchanged"]["significant"])
+        residuals = analysis.build_one_factor_residuals(rows, treatments)
+        with patch.object(analysis.plt, "close"):
+            path = analysis.save_one_factor_qq_plot(residuals, "population", self.root / "qq")
+            figure = analysis.plt.gcf()
+        try:
+            self.assertTrue(path.is_file())
+            for ax, metric in zip(figure.axes, ["unchanged", "last_metric"]):
+                groups = [np.log([1, 2, 3]),
+                          np.log([1, 2, 3] if metric == "unchanged" else [11, 12, 13])]
+                expected = np.concatenate([group - group.mean() for group in groups])
+                quantiles, ordered = stats.probplot(expected, dist="norm", fit=False)
+                np.testing.assert_allclose(ax.lines[0].get_xdata(), quantiles)
+                np.testing.assert_allclose(ax.lines[0].get_ydata(), ordered, atol=1e-15)
+                self.assertEqual(len(ax.lines), 2)
+                self.assertEqual(ax.get_title(), f"log({metric})")
+        finally:
+            analysis.plt.close(figure)
+
+    def test_qq_plot_marks_zero_experimental_variation(self):
+        rows = response_rows([[0.1] * 30, [0.3] * 30])
+        _, treatments = analysis.build_one_factor_summary(rows, 0.05)
+        residuals = analysis.build_one_factor_residuals(rows, treatments)
+        with patch.object(analysis.plt, "close"), \
+             patch.object(analysis.stats, "probplot", side_effect=AssertionError):
+            analysis.save_one_factor_qq_plot(residuals, "factor", self.root / "constant")
+            figure = analysis.plt.gcf()
+        try:
+            self.assertIn("Normality cannot be assessed", figure.axes[0].texts[0].get_text())
+            self.assertEqual(len(figure.axes[0].lines), 0)
+        finally:
+            analysis.plt.close(figure)
 
 
 class ResponseTransformTests(unittest.TestCase):

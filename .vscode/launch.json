@@ -12,8 +12,8 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": true,
-            // "args": ["-- designs", "experiments/factorial_design/designs/factorial_runtime.csv", "--response_transforms", "total_time=log"]
-            // "args": ["datasets/files/mgus2.parquet", "-time", "futime", "-event", "status", "--generations", "500", "--restart_gen", "5", "--restart_pop", "5", "--comparacao", "population", "--alpha", "0.1", "--ksize", "10", "--plt_rank", "3", "--seed", "42"]
+            "args": ["--designs", "experiments/factorial_design/designs/factorial_score_metric.csv"]
+            // "args": ["datasets/files/mgus2.parquet", "-time", "futime", "-event", "status", "--plt_rank", "10", "--score_metric", "km_abc"]
         }
     ]
 }
