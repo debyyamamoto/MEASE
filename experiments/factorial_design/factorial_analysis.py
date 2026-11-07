@@ -1065,7 +1065,7 @@ def build_one_factor_summary(
     responses_df: pd.DataFrame,
     alpha: float,
 ) -> tuple[dict[str, dict], pd.DataFrame]:
-    """Classical one-way ANOVA, including unequal numbers of replications."""
+    """One-factor model and ANOVA from aula6-projeto1fator.pdf (pp. 3–13, 20–22)."""
     if not 0 < alpha < 1:
         raise ValueError("alpha must be between 0 and 1.")
     global_info = {}
@@ -1079,30 +1079,30 @@ def build_one_factor_summary(
         k, n = len(groups), len(values)
         if k < 2 or n <= k:
             raise ValueError(f"Metric '{metric}' needs at least two levels and positive residual degrees of freedom.")
-        # Center before summation to avoid cancellation in SSY - SS0.
-        origin = values[0]
-        centered = values - origin
-        grand_offset = float(centered.mean())
-        offsets = [
-            float(group[0] - origin) if np.ptp(group) == 0 else float((group - origin).mean()) for group in groups
-        ]
-        effects = np.array(offsets) - grand_offset
-        residuals = np.concatenate([(group - origin) - offset for group, offset in zip(groups, offsets)])
-        sse = float(residuals @ residuals)
+        # mu = sum(y_ij) / N; alpha_j = mean_j - mu (slides 3–4).
+        mu = math.fsum(values) / n
+        means = np.array([math.fsum(group) / len(group) for group in groups])
+        effects = means - mu
+        # y_hat_j = mu + alpha_j = mean_j; e_ij = y_ij - y_hat_j (slide 7).
+        residuals = np.concatenate([group - mean for group, mean in zip(groups, means)])
+        sse = float(np.sum(residuals**2))
+        # Allocation of variation (slides 9 and 22), without recentering the data.
+        ssy = float(np.sum(values**2))
+        ss0 = n * mu**2
+        sst = ssy - ss0
         ssa = float(sum(len(group) * effect**2 for group, effect in zip(groups, effects)))
-        sst = float(np.sum((centered - grand_offset) ** 2))
         df_factor, df_error = k - 1, n - k
         msa, mse = ssa / df_factor, sse / df_error
         f_value = msa / mse if mse > 0 else (math.inf if ssa > 0 else math.nan)
         p_value = float(stats.f.sf(f_value, df_factor, df_error))
         f_critical = float(stats.f.ppf(1 - alpha, df_factor, df_error))
         global_info[metric] = {
-            "mean": origin + grand_offset,
+            "mean": mu,
             "n_total": n,
             "n_levels": k,
             "balanced": len({len(group) for group in groups}) == 1,
-            "SSY": float(values @ values),
-            "SS0": float(n * (origin + grand_offset) ** 2),
+            "SSY": ssy,
+            "SS0": ss0,
             "SST": sst,
             "SSA": ssa,
             "SSE": sse,
@@ -1111,6 +1111,7 @@ def build_one_factor_summary(
             "MSA": msa,
             "MSE": mse,
             "se^2": mse,
+            "se": math.sqrt(mse),
             "F_calc": f_value,
             "F_critical": f_critical,
             "p_value": p_value,
@@ -1119,8 +1120,7 @@ def build_one_factor_summary(
             "Explained Var": ssa / sst if sst > 0 else math.nan,
             "response_transform": metric_df["response_transform"].iloc[0],
         }
-        for (config, group_df), group, offset, effect in zip(grouped, groups, offsets, effects):
-            mean = origin + offset
+        for (config, group_df), group, mean, effect in zip(grouped, groups, means, effects):
             treatments.append(
                 {
                     "metric": metric,
@@ -1137,37 +1137,115 @@ def build_one_factor_summary(
     return global_info, pd.DataFrame(treatments)
 
 
+def build_one_factor_residuals(responses_df: pd.DataFrame, treatments_df: pd.DataFrame) -> pd.DataFrame:
+    """Attach each observation's fitted mean (mu + alpha_j) and experimental error."""
+    fitted = treatments_df[["metric", "config", "y_j_mean"]].rename(columns={"y_j_mean": "y_hat"})
+    residuals_df = responses_df.merge(fitted, on=["metric", "config"], how="left", validate="many_to_one")
+    residuals_df["residual"] = residuals_df["y"] - residuals_df["y_hat"]
+    return residuals_df
+
+
+def save_one_factor_residual_plot(residuals_df: pd.DataFrame, factor: str, prefix: Path) -> Path:
+    """Residuals versus fitted response for all included metrics (slide 15)."""
+    metrics = list(residuals_df.groupby("metric", sort=False))
+    ncols = min(3, len(metrics))
+    nrows = math.ceil(len(metrics) / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.6 * nrows), squeeze=False)
+    for ax, (metric, rows) in zip(axes.flat, metrics):
+        ax.scatter(rows["y_hat"], rows["residual"], alpha=0.65, s=22, color="#b64b2d")
+        ax.axhline(0, color="black", linewidth=1)
+        transform = rows["response_transform"].iloc[0]
+        label = metric if transform == IDENTITY_TRANSFORM else f"{transform}({metric})"
+        ax.set_title(label, fontsize=10)
+        ax.set_xlabel("Fitted response (μ + αj)")
+        ax.set_ylabel("Residual (yij − ŷj)")
+        ax.grid(alpha=0.2)
+    for ax in axes.flat[len(metrics) :]:
+        ax.set_visible(False)
+    fig.suptitle(f"Residuals vs fitted response: {factor}", fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    path = Path(f"{prefix}_residuals_vs_fitted.png")
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
+
+
+def save_one_factor_qq_plot(residuals_df: pd.DataFrame, factor: str, prefix: Path) -> Path:
+    """Normal Q-Q plots of experimental errors, including nonsignificant metrics."""
+    metrics = list(residuals_df.groupby("metric", sort=False))
+    ncols = min(3, len(metrics))
+    nrows = math.ceil(len(metrics) / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.6 * nrows), squeeze=False)
+    for ax, (metric, rows) in zip(axes.flat, metrics):
+        # Constant treatments have no experimental variation, even if floating-point
+        # subtraction produces tiny residuals for decimal-valued observations.
+        if rows.groupby("config")["y"].nunique().eq(1).all():
+            ax.text(
+                0.5,
+                0.5,
+                "No within-level variation\nNormality cannot be assessed",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+        else:
+            stats.probplot(rows["residual"].to_numpy(dtype=float), dist="norm", plot=ax)
+            ax.get_lines()[0].set(markersize=4, alpha=0.65, color="#b64b2d")
+            ax.get_lines()[1].set(color="black", linewidth=1)
+        transform = rows["response_transform"].iloc[0]
+        label = metric if transform == IDENTITY_TRANSFORM else f"{transform}({metric})"
+        ax.set_title(label, fontsize=10)
+        ax.set_xlabel("Theoretical normal quantiles")
+        ax.set_ylabel("Ordered residuals (yij − ŷj)")
+        ax.grid(alpha=0.2)
+    for ax in axes.flat[len(metrics) :]:
+        ax.set_visible(False)
+    fig.suptitle(f"Normal Q-Q plots of residuals: {factor}", fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    path = Path(f"{prefix}_residuals_qq.png")
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
+
+
 def save_one_factor_impact_plot(
     treatments_df: pd.DataFrame,
     global_info: dict[str, dict],
     factor: str,
     prefix: Path,
 ) -> list[Path]:
-    """Plot significant metrics only when the factor has numeric levels."""
+    """Plot significant metric means at numeric or categorical factor levels."""
     paths = [Path(f"{prefix}_significant_impact.png")]
     metrics = [metric for metric, info in global_info.items() if info["significant"]]
     numeric_levels = pd.to_numeric(treatments_df["factor_level"], errors="coerce")
-    if not metrics or numeric_levels.isna().any():
+    if not metrics:
         for path in paths:
             path.unlink(missing_ok=True)  # Remove plots that no longer apply to this analysis.
         return []
-    treatments_df = treatments_df.assign(factor_level=numeric_levels)
+    categorical = numeric_levels.isna().any()
+    if not categorical:
+        treatments_df = treatments_df.assign(factor_level=numeric_levels)
     ncols = min(3, len(metrics))
     nrows = math.ceil(len(metrics) / ncols)
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.6 * nrows), squeeze=False)
     for ax, metric in zip(axes.flat, metrics):
         info = global_info[metric]
-        summary = treatments_df[treatments_df["metric"] == metric].sort_values("factor_level")
-        x = summary["factor_level"].to_numpy(dtype=float)
+        summary = treatments_df[treatments_df["metric"] == metric]
+        if not categorical:
+            summary = summary.sort_values("factor_level")
+        x = np.arange(len(summary)) if categorical else summary["factor_level"].to_numpy()
         ax.plot(
             x,
             summary["y_j_mean"],
-            "o-",
+            "o" if categorical else "o-",
             color="#b64b2d",
             linewidth=1.5,
         )
-        rotation = 90 if np.diff(x).min() < 0.08 * np.ptp(x) else 25
-        ax.set_xticks(x, summary["factor_level"].astype(str), rotation=rotation, fontsize=9)
+        rotation = 35 if categorical else (90 if np.diff(x).min() < 0.08 * np.ptp(x) else 25)
+        ax.set_xticks(x, summary["factor_level"].astype(str), fontsize=9,
+                      rotation=rotation, ha="right")
         transform = info["response_transform"]
         ax.set_ylabel(metric if transform == IDENTITY_TRANSFORM else f"{transform}({metric})")
         ax.set_xlabel(factor)
@@ -1209,26 +1287,40 @@ def analyze_one_factor(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     summary = pd.DataFrame.from_dict(global_info, orient="index").rename_axis("metric")
-    summary = summary[[
-        "df_factor", "df_error", "F_calc", "F_critical", "p_value", "alpha_sig", "significant",
-        "Explained Var", "response_transform",
-    ]]
+    summary = summary[
+        [
+            "df_factor",
+            "df_error",
+            "F_calc",
+            "F_critical",
+            "p_value",
+            "alpha_sig",
+            "significant",
+            "Explained Var",
+            "response_transform",
+        ]
+    ]
     factor = factor_columns(design_df)[0]
     summary.insert(0, "factor", factor)
     summary.to_csv(f"{prefix}_anova.csv")
 
     print(f"\n=== {factor}: ANOVA (last three metrics excluded) ===")
-    print(summary.drop(columns=["factor", "response_transform"]).to_string(
-        formatters={"Explained Var": "{:.2%}".format},
-    ))
+    print(
+        summary.drop(columns=["factor", "response_transform"]).to_string(
+            formatters={"Explained Var": "{:.2%}".format},
+        )
+    )
     print(f"Saved ANOVA: {prefix}_anova.csv")
     paths = save_one_factor_impact_plot(treatments_df, global_info, factor, prefix)
     if paths:
         print("Saved impact plots: " + ", ".join(map(str, paths)))
-    elif pd.to_numeric(design_df[factor], errors="coerce").isna().any():
-        print("Categorical factor: significance and explained variance reported above; no impact plot.")
     else:
         print("No significant metrics; no impact plot.")
+    residuals_df = build_one_factor_residuals(responses_df, treatments_df)
+    residual_path = save_one_factor_residual_plot(residuals_df, factor, prefix)
+    print(f"Saved residual plot: {residual_path}")
+    qq_path = save_one_factor_qq_plot(residuals_df, factor, prefix)
+    print(f"Saved residual Q-Q plot: {qq_path}")
 
 
 def analyze_design(
